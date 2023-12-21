@@ -176,6 +176,13 @@ void DMA1_Stream0_IRQHandler(void)
   /* USER CODE END DMA1_Stream0_IRQn 1 */
 }
 
+// XXX which stream are we supposed to be using?
+void DMA1_Stream1_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_adc1);
+}
+
+
 /**
   * @brief This function handles ADC1 and ADC2 global interrupts.
   */
