@@ -11,6 +11,7 @@
 #include "usb_device.h"
 #include "usbd_cdc.h"
 #include <stdbool.h>
+#include "decoder.h"
 
 #define LED_PIN                                GPIO_PIN_3
 #define LED_GPIO_PORT                          GPIOE
@@ -41,6 +42,13 @@ const osThreadAttr_t blink01_attributes = {
   .priority = (osPriority_t) osPriorityNormal,
 };
 
+const osThreadAttr_t statusThread_attributes = {
+  .name = "status",
+  .stack_size = 512,
+  .priority = (osPriority_t) osPriorityNormal,  // TODO when the queue is implemented for notifying the work thread this can be lowered
+};
+
+
 void SystemClock_Config(void);
 // static void MPU_Initialize(void);
 static void MPU_Config(void);
@@ -49,6 +57,7 @@ static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM7_Init(void);
 void StartBlink01(void *argument);
+void statusTask(void *argument);
 void Error_Handler(void);
 
 void LED_Init();
@@ -59,6 +68,8 @@ uint32_t conversionsCompleted = 0;
 
 bool lowBuf = false;
 bool hiBuf = false;
+
+uint32_t missedBuffers = 0;
 
 int main(void)
 {
@@ -110,6 +121,9 @@ int main(void)
   /* Create the thread(s) */
   /* creation of blink01 */
   blink01Handle = osThreadNew(StartBlink01, NULL, &blink01_attributes);
+
+  // status thread
+  osThreadNew(statusTask, NULL, &statusThread_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -411,6 +425,9 @@ uint16_t findMaxValue(uint16_t *input, int len)
   return max;
 }
 
+
+// OLD code, remove once confident in the new code
+
 /**
  * Convert from 2MHz amplitude array to bitstream
  * 
@@ -422,17 +439,19 @@ uint16_t findMaxValue(uint16_t *input, int len)
  * @param len number of entries in the input array
  * @param output array to write the bitstream to
 */
-void ampToBitStream(uint16_t *input, int len, uint8_t *output)
-{
-  const int nOutBits = len/2;
-  for(int i=0; i<nOutBits; i++) {
-    if(input[2*i] > input[2*i+1]) {
-      output[i] = 1;
-    } else {
-      output[i] = 0;
-    }
-  }
-}
+// void ampToBitStream(uint16_t *input, int len, uint8_t *output)
+// {
+//   const int nOutBits = len/2;
+//   for(int i=0; i<nOutBits; i++) {
+//     if(input[2*i] > input[2*i+1]) {
+//       output[i] = 1;
+//     } else {
+//       output[i] = 0;
+//     }
+//   }
+// }
+
+// OLD code, remove once confident in the new code
 
 /**
  * Search a bitstream for the ADSB preamble pattern
@@ -440,269 +459,17 @@ void ampToBitStream(uint16_t *input, int len, uint8_t *output)
  * as they are not valid pulse encodings and will be randomly
  * converted by ampToBitStream
 */
-int findPreamble(uint8_t *input, int len, int start)
-{
-  for(int i=start; i<len; i++) {
-    // 11??00??
-    if (input[i] == 1 && input[i+1] == 1 && input[i+4] == 0 && input[i+5] == 0) {
-      return i;
-    }
-  }
-  return -1;
-}
+// int findPreamble(uint8_t *input, int len, int start)
+// {
+//   for(int i=start; i<len; i++) {
+//     // 11??00??
+//     if (input[i] == 1 && input[i+1] == 1 && input[i+4] == 0 && input[i+5] == 0) {
+//       return i;
+//     }
+//   }
+//   return -1;
+// }
 
-/**
- * read 8 bits from the bitstream starting at the specified index
- * 
- * NB The caller is responsible for making sure there are enough values in the stream
- * 
- * @param input bitstream to read from as an array of uint8_t, values must be 0 or 1
- * @param start index in the bitstream to start reading from
-*/
-uint8_t read8Bits(uint8_t *input, int start)
-{
-  uint8_t df = 0;
-
-  for(int i=0; i<8; i++) {
-    df = df << 1;
-    uint8_t t = input[start+i];
-    if (t > 1) {
-      printf("ERROR bad bitsream value %d at index %d\n", t, start+i);
-      return 0;
-    }
-    df |= t;
-  }
-
-  return df;
-}
-
-/**
- * read 24 bits from the bitstream starting at the specified index
- * 
- * NB The caller is responsible for making sure there are enough values in the stream
- * 
- * @param input bitstream to read from as an array of uint8_t, values must be 0 or 1
- * @param start index in the bitstream to start reading from
- * 
- * TODO generalise to N and replace the width specific versions with wrappers
-*/
-uint32_t read24Bits(uint8_t *input, int start)
-{
-  uint32_t res = 0;
-
-  for(int i=0; i<24; i++) {
-    res = res << 1;
-    uint8_t t = input[start+i];
-    if (t > 1) {
-      printf("ERROR bad bitsream value %d at index %d\n", t, start+i);
-      return 0;
-    }
-    res |= t;
-  }
-
-  return res;
-}
-
-
-/**
- * Attempt to decode a modeS message at the specified start index
- * 
- * TODO pass the start index of the data instead of the preamble
- * TODO what do we want the output of this to be, and what return values?
-*/
-void decodeModeS(uint32_t preambleStart)
-{
-  // Do we have enough bits for a complete message?
-  if ((preambleStart + 120) < BITSTREAM_BUFFER_ENTRIES) 
-  {
-    // Read bits 8 to 12 for the DF
-    const int dfStart = preambleStart + 8;
-    uint8_t df = 0;
-
-    for(int i=0; i<5; i++) {
-      df = df << 1;
-      if (bitstream[dfStart+i] > 1) {
-        printf("ERROR bad bitsream value %d at index %d\n", bitstream[dfStart+i], dfStart+i);
-        return;
-      }
-      df |= bitstream[dfStart+i];
-    }
-
-    // printf("DF: %02x (%d)\n", df, df);
-
-    switch (df) {
-      case 0:
-      case 4:
-      case 5:
-      case 11:
-        // printf("df0,4,5,11\n");
-        // if (preambleStart + 56 < (ADC_CONVERTED_DATA_BUFFER_SIZE/16)) {
-        //   uint8_t b1 = read8Bits(bitstream, preambleStart + 32);
-        //   uint8_t b2 = read8Bits(bitstream, preambleStart + 40);
-        //   uint8_t b3 = read8Bits(bitstream, preambleStart + 48);
-        //   uint32_t address = (b1 << 16) | (b2 << 8) | b3;
-        //   printf("Address: %08lx\n", address);
-        // } else {
-        //   printf("packet too close to the end to read address\n");
-        // }
-        break;
-      case 17:  // These are what we are expecting for ADS-B squitter messages
-          // DF starts at +8
-          // CA at +13
-          // Address at +16
-          // ME (payload) at +40
-          // Parity at +96
-        {
-          // printf("ADS-B squitter message\n");
-          uint8_t b1 = read8Bits(bitstream, preambleStart + 16);
-          uint8_t b2 = read8Bits(bitstream, preambleStart + 24);
-          uint8_t b3 = read8Bits(bitstream, preambleStart + 32);
-          uint32_t address = (b1 << 16) | (b2 << 8) | b3;
-          printf("Address: %06lx\n", address);
-        }
-        break;
-      default:
-        // if ((df & 0b11000) == 0b11000) {
-        //   printf("extended length message\n");
-        // }
-        break;
-    }
-  } // if (enough bits)
-
-}
-
-// From dump1090, crc calculation
-//
-// ===================== Mode S detection and decoding  ===================
-//
-// Parity table for MODE S Messages.
-// The table contains 112 elements, every element corresponds to a bit set
-// in the message, starting from the first bit of actual data after the
-// preamble.
-//
-// For messages of 112 bit, the whole table is used.
-// For messages of 56 bits only the last 56 elements are used.
-//
-// The algorithm is as simple as xoring all the elements in this table
-// for which the corresponding bit on the message is set to 1.
-//
-// The latest 24 elements in this table are set to 0 as the checksum at the
-// end of the message should not affect the computation.
-//
-// Note: this function can be used with DF11 and DF17, other modes have
-// the CRC xored with the sender address as they are reply to interrogations,
-// but a casual listener can't split the address from the checksum.
-//
-const uint32_t modes_checksum_table[112] = {
-0x3935ea, 0x1c9af5, 0xf1b77e, 0x78dbbf, 0xc397db, 0x9e31e9, 0xb0e2f0, 0x587178,
-0x2c38bc, 0x161c5e, 0x0b0e2f, 0xfa7d13, 0x82c48d, 0xbe9842, 0x5f4c21, 0xd05c14,
-0x682e0a, 0x341705, 0xe5f186, 0x72f8c3, 0xc68665, 0x9cb936, 0x4e5c9b, 0xd8d449,
-0x939020, 0x49c810, 0x24e408, 0x127204, 0x093902, 0x049c81, 0xfdb444, 0x7eda22,
-0x3f6d11, 0xe04c8c, 0x702646, 0x381323, 0xe3f395, 0x8e03ce, 0x4701e7, 0xdc7af7,
-0x91c77f, 0xb719bb, 0xa476d9, 0xadc168, 0x56e0b4, 0x2b705a, 0x15b82d, 0xf52612,
-0x7a9309, 0xc2b380, 0x6159c0, 0x30ace0, 0x185670, 0x0c2b38, 0x06159c, 0x030ace,
-0x018567, 0xff38b7, 0x80665f, 0xbfc92b, 0xa01e91, 0xaff54c, 0x57faa6, 0x2bfd53,
-0xea04ad, 0x8af852, 0x457c29, 0xdd4410, 0x6ea208, 0x375104, 0x1ba882, 0x0dd441,
-0xf91024, 0x7c8812, 0x3e4409, 0xe0d800, 0x706c00, 0x383600, 0x1c1b00, 0x0e0d80,
-0x0706c0, 0x038360, 0x01c1b0, 0x00e0d8, 0x00706c, 0x003836, 0x001c1b, 0xfff409,
-0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
-0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
-0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000
-};
-
-/**
- * modified to operate on the bitsream array which is one byte per bit
-*/
-uint32_t modeSChecksum(int bits) 
-{
-  uint32_t   crc = 0;
-
-  int        offset = (bits == 112) ? 0 : (112-56);
-
-  const uint32_t * pCRCTable = &modes_checksum_table[offset];
-  int j;
-
-  // We don't really need to include the checksum itself
-  bits -= 24;
-  for(j = 0; j < bits; j++) {
-    // If bit is set, xor with corresponding table entry.
-    if (bitstream[j]) {crc ^= *pCRCTable;} 
-    pCRCTable++;
-  }
-
-  return (crc & 0x00FFFFFF); // JBK - it shouldn't be possible for any of the high bits to be set, so this is unnecessary?
-}
-
-
-/**
- * decodeModeS using bitstream with no preamble
-*/
-bool decodeModeS_NEW()
-{
-  bool crcOk = false;
-
-  // Read 5 bits for the DF
-  const int dfStart = 0;
-  uint8_t df = 0;
-
-  for(int i=0; i<5; i++) {
-    df = df << 1;
-    if (bitstream[dfStart+i] > 1) {
-      printf("ERROR bad bitsream value %d at index %d\n", bitstream[dfStart+i], dfStart+i);
-      return false;
-    }
-    df |= bitstream[dfStart+i];
-  }
-
-  // printf("DF: %02x (%d)\n", df, df);
-
-  switch (df) {
-    case 0:
-    case 4:
-    case 5:
-    case 11:
-      // printf("df0,4,5,11\n");
-      // if (preambleStart + 56 < (ADC_CONVERTED_DATA_BUFFER_SIZE/16)) {
-      //   uint8_t b1 = read8Bits(bitstream, preambleStart + 32);
-      //   uint8_t b2 = read8Bits(bitstream, preambleStart + 40);
-      //   uint8_t b3 = read8Bits(bitstream, preambleStart + 48);
-      //   uint32_t address = (b1 << 16) | (b2 << 8) | b3;
-      //   printf("Address: %08lx\n", address);
-      // } else {
-      //   printf("packet too close to the end to read address\n");
-      // }
-      break;
-    case 17:  // These are what we are expecting for ADS-B squitter messages
-        // DF starts at +8
-        // CA at +13
-        // Address at +16
-        // ME (payload) at +40
-        // Parity at +96
-      {
-        // printf("ADS-B squitter message\n");
-        const uint32_t expectedCrc = modeSChecksum(112);
-        const uint32_t actualCrc = read24Bits(bitstream, 88);
-        crcOk = (actualCrc == expectedCrc);
-        // printf("Expected CRC: %08lx, actual CRC: %08lx, %s\n", expectedCrc, actualCrc, crcOk ? "MATCHED" : "failed");
-
-        if (crcOk) {
-          uint8_t b1 = read8Bits(bitstream, 8);
-          uint8_t b2 = read8Bits(bitstream, 16);
-          uint8_t b3 = read8Bits(bitstream, 24);
-          uint32_t address = (b1 << 16) | (b2 << 8) | b3;
-          printf("Address: %06lx\n", address);
-        }
-      }
-      break;
-    default:
-      // if ((df & 0b11000) == 0b11000) {
-      //   printf("extended length message\n");
-      // }
-      break;
-  }
-
-  return crcOk;
-}
 
 void printArray(uint16_t *input, int len)
 {
@@ -867,6 +634,103 @@ int filteredAmplitudeToBitStream(uint16_t *input, int len, int start)
   return 112;
 }
 
+void statusTask(void *argument)
+{
+  static uint32_t tLast = 0;
+
+  while(true)
+  {
+    osDelay(10000);
+
+    const uint32_t now = HAL_GetTick();
+    uint32_t diff = now - tLast;
+    uint64_t sps = (uint64_t)ADC_CONVERTED_DATA_BUFFER_SIZE*1000 * conversionsCompleted / diff;
+    printf("Time taken: %lu, buffers:%lu sps=%lu\n", diff, conversionsCompleted, (uint32_t)sps);
+    tLast = now;
+    conversionsCompleted = 0;
+
+    // Need the taskHandle of the main task
+    UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+    if (stackHighWaterMark == 0) {
+      printf("ERROR: stack overflow on status task!!\n");
+    }
+
+    stackHighWaterMark = uxTaskGetStackHighWaterMark(blink01Handle);
+    if (stackHighWaterMark == 0) {
+      printf("ERROR: stack overflow on main task!!\n");
+    }
+
+    if (missedBuffers) {
+      printf("%ld missed buffers\n", missedBuffers);
+      missedBuffers = 0;
+    }
+
+  }
+}
+
+void processBuffer(uint16_t *input, int len)
+{
+  uint16_t avg = calculateAverage(input, len);
+  // printf("Average: %d\n", avg);
+
+  uint16_t max;
+  // debugging - dump data when there's a strong signal
+  // uint16_t max = findMaxValue(input, len);
+  // bool dumpIt = (max > 180);
+  // if (dumpIt) {
+  //   // dump input[] to stdout
+  //   printf("RAW:\n");
+  //   printArray(input, len);
+  // }
+
+  max = 0;  // Get a new max after removing dc offset
+  for(int i=0; i < len; i++) {
+    int t = input[i];
+    // DC offset and abs value
+    const uint16_t amp = (t > avg) ? (t - avg) : avg - t;
+    input[i] = amp;
+    if (amp > max) {
+      max = amp;
+    }
+  }
+
+  // if (dumpIt) {
+  //   printf("ABS:\n");
+  //   printArray(input, len);
+  // }
+
+  if (max > 10) {
+    filterSamples(input, len);
+    // printf("FILTERED:\n");
+    // printArray(input, len);
+
+    // Find the preamble in the filtered data
+    int preambleIndex = 0;
+    while(preambleIndex < len) {
+      preambleIndex = findPreambleInFilteredData(input, len, preambleIndex);
+      if (preambleIndex == -1) {
+        break;
+      } else {
+        // printf("Found preamble at %d\n", preambleIndex);
+
+        int nBitsConverted = filteredAmplitudeToBitStream(input, len, preambleIndex+64);
+
+        bool success = false;
+        if (nBitsConverted == 112) {
+          success = decodeModeS(bitstream, 112);
+        }
+        if (success) {
+          preambleIndex += (120 * 8); // move the pointer past the message
+        } else {
+          preambleIndex++;
+        }
+      }
+    }
+
+  }
+
+}
+
 /**
   * @brief  Initial testing only
   * @param  argument: Not used
@@ -875,7 +739,8 @@ int filteredAmplitudeToBitStream(uint16_t *input, int len, int start)
 void StartBlink01(void *argument)
 {
   // static uint32_t tLast = 0;
-	uint32_t count = 0;
+	// uint32_t count = 0;
+  uint16_t localSamples[ADC_CONVERTED_DATA_BUFFER_SIZE/2];
 
   for(;;)
   {
@@ -895,8 +760,6 @@ void StartBlink01(void *argument)
     if (lowBuf) {
       bool oldHiBuf = hiBuf;
 
-      uint16_t localSamples[ADC_CONVERTED_DATA_BUFFER_SIZE/2];
-
       // Grab the data into the local array as quickly as possible
       memcpy(localSamples, aADCxConvertedData, ADC_CONVERTED_DATA_BUFFER_SIZE); // half the buffer, so /2, but 2 bytes per sample so *2
 
@@ -905,176 +768,7 @@ void StartBlink01(void *argument)
         printf("ERROR: HI BUF SET, old value was %d\n", oldHiBuf);
       }
 
-      uint16_t avg = calculateAverage(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
-      // printf("Average: %d\n", avg);
-
-      uint16_t max;
-      // debugging - dump data when there's a strong signal
-      // uint16_t max = findMaxValue(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
-      // bool dumpIt = (max > 180);
-      // if (dumpIt) {
-      //   // dump localSamples[] to stdout
-      //   printf("RAW:\n");
-      //   printArray(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
-      // }
-
-      max = 0;  // Get a new max after removing dc offset
-      for(int i=0; i<(ADC_CONVERTED_DATA_BUFFER_SIZE/2); i++) {
-        int t = localSamples[i];
-        // DC offset and abs value
-        const uint16_t amp = (t > avg) ? (t - avg) : avg - t;
-        localSamples[i] = amp;
-        if (amp > max) {
-          max = amp;
-        }
-      }
-
-      // if (dumpIt) {
-      //   printf("ABS:\n");
-      //   printArray(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
-      // }
-
-      if (max > 40) {
-        filterSamples(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
-        // printf("FILTERED:\n");
-        // printArray(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
-
-        // Find the preamble in the filtered data
-        int preambleIndex = 0;
-        while(preambleIndex < (ADC_CONVERTED_DATA_BUFFER_SIZE/2)) {
-          preambleIndex = findPreambleInFilteredData(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2, preambleIndex);
-          if (preambleIndex == -1) {
-            break;
-          } else {
-            // printf("Found preamble at %d\n", preambleIndex);
-
-            filteredAmplitudeToBitStream(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2, preambleIndex+64);
-
-            bool success = decodeModeS_NEW();
-            if (success) {
-              preambleIndex += (120 * 8); // move the pointer past the message
-            } else {
-              preambleIndex++;
-            }
-          }
-        }
-
-      }
-
-
-      const uint16_t SIGNAL_THRESHOLD = 1000; // XXX high value for testing, see how low we can reduce it to later
-
-      if (max > SIGNAL_THRESHOLD)
-      {
-        uint16_t decimated[ADC_CONVERTED_DATA_BUFFER_SIZE/8]; // half the input buffer, with a 4:1 decimation
-        uint16_t localSamplesDecimated[ADC_CONVERTED_DATA_BUFFER_SIZE/8];
-
-        // uint16_t globalRangeMax = 0;
-
-        for(int offset=0; offset<4; offset++) 
-        {
-          // printf("offset: %d\n", offset);
-          uint16_t min = 9999, max = 0;
-          for(int i=0; i<(ADC_CONVERTED_DATA_BUFFER_SIZE/8)-1; i++) {
-            const int j = (i * 4) + offset;
-            uint16_t a = localSamples[j];
-            uint16_t b = localSamples[j+1];
-            uint16_t c = localSamples[j+2];
-            uint16_t d = localSamples[j+3];
-            localSamplesDecimated[i] = a + b + c + d;
-            // printf("i, j, a, b, c, d: %d %d %d %d %d %d, res %d\n", i, j, a, b, c, d, decimated[i]);
-            // printf("%d ", localSamplesDecimated[i]);
-            if (localSamplesDecimated[i] < min) {
-              min = localSamplesDecimated[i];
-            } else if (localSamplesDecimated[i] > max) {
-              max = localSamplesDecimated[i];
-            }
-          }
-          // printf("\n");
-          // printf("Min: %d, Max: %d, range %d\n", min, max, max-min);
-
-          // if (max-min > globalRangeMax) {
-          //   globalRangeMax = max-min;
-            memcpy(decimated, localSamplesDecimated, (ADC_CONVERTED_DATA_BUFFER_SIZE/8)*2);
-            // printf("copying data for offset %d\n",offset);
-          // }
-
-          // Loop to check both 0 and 1 starting points for ampToBitStream as we don't know the initial phase.
-          // TODO check for both phases with a sliding window that doesn't convert the whole buffer up front
-          // Maybe use probability of each bit being 1 and generate an overal confidence of matching the preamble.
-
-          for(int phase=0; phase<2; phase++) {
-
-            // printf("phase %d\n", phase);
-
-            ampToBitStream(&decimated[phase], ADC_CONVERTED_DATA_BUFFER_SIZE/8, bitstream);
-            // for(int k=0; k<(ADC_CONVERTED_DATA_BUFFER_SIZE/16); k++) {
-            //   printf("%d ", bitstream[k]);
-            // }
-            // printf("\n");
-
-            int preambleStart = 0; 
-            
-            while(preambleStart < (BITSTREAM_BUFFER_ENTRIES-120))
-            {
-              preambleStart = findPreamble(bitstream, ADC_CONVERTED_DATA_BUFFER_SIZE/16, preambleStart);
-              if (preambleStart != -1) {
-                // printf("Preamble found at %d\n", preambleStart);
-                printf(".");
-                // for(int i=preambleStart; i<preambleStart+16; i++) {
-                //   if (i >= (ADC_CONVERTED_DATA_BUFFER_SIZE/16)) break;
-                //   printf("%d ", bitstream[i]);
-                // }
-                // printf("\n");
-
-                // TODO if we got a success/fail return value we would know how much to increment the start pointer by
-                decodeModeS(preambleStart);
-              } else {
-                break;  // stop searching for preambles
-              }
-              preambleStart++; // step past the current hit and search again
-            } // while (still room for a packet)
-
-          } // for(int phase=0; phase<2; phase++)
-
-
-        } // for(int offset=0; offset<4; offset++)
-
-        // printf("Signal %u\n", globalRangeMax);
-
-
-        // // find the first sample
-        // const uint32_t HIGH_THRESHOLD = 15;
-
-        // int32_t signal_start = -1;
-        // for(int i=0; i<(ADC_CONVERTED_DATA_BUFFER_SIZE/2); i++) {
-        //   if (localSamples[i] > HIGH_THRESHOLD) {
-        //     signal_start = i;
-        //     break;
-        //   }
-        // }
-
-        // if (signal_start == -1) {
-        //   // shouldn't happen
-        //   printf("No signal found\n");
-        // } else {
-
-        //   #define HUMAN_FORMAT 1
-        //   #ifdef HUMAN_FORMAT
-        //   const uint32_t SamplesPerLine = 32;
-        //   for(int i=signal_start; i<(ADC_CONVERTED_DATA_BUFFER_SIZE/2); i++) {
-        //     printf("%d ", localSamples[i]);
-        //     if (i % SamplesPerLine == (SamplesPerLine - 1)) {
-        //       printf("\n");
-        //     }
-        //   }
-        // }
-        // #else
-        // for(int i=signal_start; i<(ADC_CONVERTED_DATA_BUFFER_SIZE/2); i++) {
-        //   printf("%d\n", localSamples[i]);
-        // }
-        // #endif
-      }
+      processBuffer(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
 
       lowBuf = false;
     }
@@ -1083,25 +777,19 @@ void StartBlink01(void *argument)
     if (hiBuf) {
       // printf("hibuf set\n");
 
-      // get the stack high water mark
-      if((count++ % 10000) == 0) {
-        // const uint32_t now = HAL_GetTick();
-        // uint32_t diff = now - tLast;
-        // uint64_t sps = (uint64_t)ADC_CONVERTED_DATA_BUFFER_SIZE*1000 * conversionsCompleted / diff;
-        // printf("Time taken: %lu, buffers:%lu sps=%lu\n", diff, conversionsCompleted, (uint32_t)sps);
-        // tLast = now;
-        // conversionsCompleted = 0;
+      bool oldLoBuf = lowBuf;
 
-        // debug will have thrown timing out, so clear lowBuf too
-        // lowBuf = false;
 
-        UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
-        // printf("Stack high water mark %lu\n", stackHighWaterMark);
-        if (stackHighWaterMark == 0) {
-          printf("ERROR: stack overflow!!\n");
-        }
+      // Grab the data into the local array as quickly as possible
+      memcpy(localSamples, &(aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE/2]), ADC_CONVERTED_DATA_BUFFER_SIZE); // half the buffer, so /2, but 2 bytes per sample so *2
 
+      // if loBuf was set while we were doing the copy then we likely have corrupted data
+      if (lowBuf) {
+        printf("ERROR: Low BUF SET, old value was %d\n", oldLoBuf);
       }
+
+      processBuffer(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
+
 
       hiBuf = false;
 
@@ -1261,6 +949,7 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
   // NB ADC_CONVERTED_DATA_BUFFER_SIZE is the array size where the values are 16 bit, so the total array size is *2, but we're
   // only invalidating 1/2 of it, so ADC_CONVERTED_DATA_BUFFER_SIZE * 2 / 2
   SCB_InvalidateDCache_by_Addr((uint32_t *) &aADCxConvertedData[0], ADC_CONVERTED_DATA_BUFFER_SIZE);
+  if (lowBuf) missedBuffers++;
   lowBuf = true;
 }
 
@@ -1274,5 +963,6 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
    /* Invalidate Data Cache to get the updated content of the SRAM on the second half of the ADC converted data buffer: 32 bytes */
   SCB_InvalidateDCache_by_Addr((uint32_t *) &aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE/2], ADC_CONVERTED_DATA_BUFFER_SIZE);
   conversionsCompleted++;
+  if (hiBuf) missedBuffers++;
   hiBuf = true;
 }
