@@ -5,6 +5,11 @@
 #ifndef ADSB_DECODE_H
 #define ADSB_DECODE_H
 
-bool decodeModeS(const uint8_t *bitstream, int bits);
+#include <stdint.h>
+
+// Enable binary data output for readsb
+#define BEAST_OUTPUT
+
+bool decodeModeS(uint8_t *bitstream, int bits);
 
 #endif // ADSB_DECODE_H

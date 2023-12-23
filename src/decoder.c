@@ -12,7 +12,9 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 
+#include "decoder.h"
 
 /**
  * Read N bits from the bitstream starting at the specified index
@@ -157,6 +159,9 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
   }
 
   if (crcOk) {
+
+    // TODO eventually we will need to be updating the contact database instead of printing debug
+    #ifndef BEAST_OUTPUT
     uint8_t b1 = read8Bits(bitstream, 8);
     uint8_t b2 = read8Bits(bitstream, 16);
     uint8_t b3 = read8Bits(bitstream, 24);
@@ -164,9 +169,32 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
 
     // The 'type' of the message part is in 5 bits starting at offset 32
     const uint8_t type = readNBits(bitstream, 32, 5);
-
-    // TODO eventually we will need to be updating the contact database instead of printing debug
     printf("Address: %06lx Type: %d\n", address, type);
+    #else
+    // Output in beast binary format for decoding by readsb
+    // https://wiki.jetvision.de/wiki/Mode-S_Beast:Contents
+    // <esc> "3" : 6 byte MLAT timestamp, 1 byte signal level, 14 byte Mode-S long frame, where <esc> is 0x1a
+    // Any 0x1a values in the body have to be doubled up (esc-esc), so the actual message length is unknown at first
+    uint8_t beastMsg[41]; // 2 + 6 + 1 + (14 * 2) + 4
+    memset(beastMsg, 0, 12); // zero out the first part of the message (timestamp and signal, rounded up so that memset can write words)
+    beastMsg[0] = 0x1a;
+    beastMsg[1] = 0x33;
+    // leave mlat and signal level 0?
+    int outptr = 9;
+    for(int i=0; i<14; i++) {
+      uint8_t x = read8Bits(bitstream, i*8);
+      beastMsg[outptr++] = x;
+      if (x == 0x1a) {
+        // double up esc chars
+        beastMsg[outptr++] = 0x1a;
+      }
+    }
+    beastMsg[outptr++] = 's';
+    beastMsg[outptr++] = 'e';
+    beastMsg[outptr++] = 'p';
+    beastMsg[outptr++] = 0;
+    fwrite(beastMsg, 1, outptr, stdout);
+    #endif
   }
 
   return crcOk;

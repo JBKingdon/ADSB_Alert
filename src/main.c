@@ -642,12 +642,21 @@ void statusTask(void *argument)
   {
     osDelay(10000);
 
+    #ifndef BEAST_OUTPUT
+
     const uint32_t now = HAL_GetTick();
     uint32_t diff = now - tLast;
     uint64_t sps = (uint64_t)ADC_CONVERTED_DATA_BUFFER_SIZE*1000 * conversionsCompleted / diff;
     printf("Time taken: %lu, buffers:%lu sps=%lu\n", diff, conversionsCompleted, (uint32_t)sps);
     tLast = now;
     conversionsCompleted = 0;
+
+    if (missedBuffers) {
+      printf("%ld missed buffers\n", missedBuffers);
+      missedBuffers = 0;
+    }
+
+    #endif
 
     // Need the taskHandle of the main task
     UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
@@ -658,11 +667,6 @@ void statusTask(void *argument)
     stackHighWaterMark = uxTaskGetStackHighWaterMark(blink01Handle);
     if (stackHighWaterMark == 0) {
       printf("ERROR: stack overflow on main task!!\n");
-    }
-
-    if (missedBuffers) {
-      printf("%ld missed buffers\n", missedBuffers);
-      missedBuffers = 0;
     }
 
   }
