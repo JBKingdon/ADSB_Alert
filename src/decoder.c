@@ -13,8 +13,11 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #include "decoder.h"
+
+#include "localConfig.h"
 
 /**
  * Read N bits from the bitstream starting at the specified index
@@ -129,9 +132,261 @@ uint32_t modeSChecksum(const uint8_t *bitstream, int bits)
     pCRCTable++;
   }
 
-  if ((crc & 0xFF000000) != 0) printf("ERROR crc & 0xFF000000 != 0\n"); // if this doesn't show up we can get rid of the mask below
+  return crc;
+}
 
-  return (crc & 0x00FFFFFF); // JBK - it shouldn't be possible for any of the high bits to be set, so this is unnecessary?
+/**
+ * Calculate the distance between two sets of coordinates in km
+ * 
+ * const R = 6371e3; // metres
+ * const φ1 = lat1 * Math.PI/180; // φ, λ in radians
+ * const φ2 = lat2 * Math.PI/180;
+ * const Δφ = (lat2-lat1) * Math.PI/180;
+ * const Δλ = (lon2-lon1) * Math.PI/180;
+ * 
+ * const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+ *         Math.cos(φ1) * Math.cos(φ2) *
+ *         Math.sin(Δλ/2) * Math.sin(Δλ/2);
+ * const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+ * 
+ * const d = R * c; // in metres
+*/
+float calculateDistance(double lat1, double lon1, double lat2, double lon2)
+{
+  // Radius of earth in km
+  double R = 6371;
+
+  // Convert to radians
+  double lat1R = lat1 * M_PI / 180.0;
+  double lat2R = lat2 * M_PI / 180.0;
+  double dLatR = (lat2 - lat1) * M_PI / 180.0;
+  double dLonR = (lon2 - lon1) * M_PI / 180.0;
+
+  // Haversine formula
+
+  double x = sin(dLatR/2);
+  double y = sin(dLonR/2);
+  
+  double a = (x * x) + cos(lat1R) * cos(lat2R) * (y * y);
+
+  double c = 2 * atan2(sqrt(a), sqrt(1-a));
+
+  double distance = R * c;
+
+  return (float)distance;
+
+}
+
+
+//
+//=========================================================================
+//
+// Always positive MOD operation, used for CPR decoding.
+//
+int cprModFunction(int a, int b) {
+    int res = a % b;
+    if (res < 0) res += b;
+    return res;
+}
+//
+//=========================================================================
+//
+// The NL function uses the precomputed table from 1090-WP-9-14
+//
+int cprNLFunction(double lat) {
+    if (lat < 0) lat = -lat; // Table is simmetric about the equator
+    if (lat < 10.47047130) return 59;
+    if (lat < 14.82817437) return 58;
+    if (lat < 18.18626357) return 57;
+    if (lat < 21.02939493) return 56;
+    if (lat < 23.54504487) return 55;
+    if (lat < 25.82924707) return 54;
+    if (lat < 27.93898710) return 53;
+    if (lat < 29.91135686) return 52;
+    if (lat < 31.77209708) return 51;
+    if (lat < 33.53993436) return 50;
+    if (lat < 35.22899598) return 49;
+    if (lat < 36.85025108) return 48;
+    if (lat < 38.41241892) return 47;
+    if (lat < 39.92256684) return 46;
+    if (lat < 41.38651832) return 45;
+    if (lat < 42.80914012) return 44;
+    if (lat < 44.19454951) return 43;
+    if (lat < 45.54626723) return 42;
+    if (lat < 46.86733252) return 41;
+    if (lat < 48.16039128) return 40;
+    if (lat < 49.42776439) return 39;
+    if (lat < 50.67150166) return 38;
+    if (lat < 51.89342469) return 37;
+    if (lat < 53.09516153) return 36;
+    if (lat < 54.27817472) return 35;
+    if (lat < 55.44378444) return 34;
+    if (lat < 56.59318756) return 33;
+    if (lat < 57.72747354) return 32;
+    if (lat < 58.84763776) return 31;
+    if (lat < 59.95459277) return 30;
+    if (lat < 61.04917774) return 29;
+    if (lat < 62.13216659) return 28;
+    if (lat < 63.20427479) return 27;
+    if (lat < 64.26616523) return 26;
+    if (lat < 65.31845310) return 25;
+    if (lat < 66.36171008) return 24;
+    if (lat < 67.39646774) return 23;
+    if (lat < 68.42322022) return 22;
+    if (lat < 69.44242631) return 21;
+    if (lat < 70.45451075) return 20;
+    if (lat < 71.45986473) return 19;
+    if (lat < 72.45884545) return 18;
+    if (lat < 73.45177442) return 17;
+    if (lat < 74.43893416) return 16;
+    if (lat < 75.42056257) return 15;
+    if (lat < 76.39684391) return 14;
+    if (lat < 77.36789461) return 13;
+    if (lat < 78.33374083) return 12;
+    if (lat < 79.29428225) return 11;
+    if (lat < 80.24923213) return 10;
+    if (lat < 81.19801349) return 9;
+    if (lat < 82.13956981) return 8;
+    if (lat < 83.07199445) return 7;
+    if (lat < 83.99173563) return 6;
+    if (lat < 84.89166191) return 5;
+    if (lat < 85.75541621) return 4;
+    if (lat < 86.53536998) return 3;
+    if (lat < 87.00000000) return 2;
+    else return 1;
+}
+//
+//=========================================================================
+//
+int cprNFunction(double lat, int fflag) {
+    int nl = cprNLFunction(lat) - (fflag ? 1 : 0);
+    if (nl < 1) nl = 1;
+    return nl;
+}
+//
+//=========================================================================
+//
+double cprDlonFunction(double lat, int fflag, int surface) {
+    return (surface ? 90.0 : 360.0) / cprNFunction(lat, fflag);
+}
+
+//=========================================================================
+//
+// This algorithm comes from:
+// 1090-WP29-07-Draft_CPR101 (which also defines decodeCPR() )
+//
+// There is an error in this document related to CPR relative decode.
+// Should use trunc() rather than the floor() function in Eq 38 and related for deltaZI.
+// floor() returns integer less than argument
+// trunc() returns integer closer to zero than argument.
+// Note:   text of document describes trunc() functionality for deltaZI calculation
+//         but the formulae use floor().
+//
+
+// XXX This has been hacked around for testing. Need to restore self-relative calc and reasonableness tests.
+
+// int decodeCPRrelative(struct aircraft *a, int fflag, int surface, double lonRel, double latRel) {
+int decodeCPRrelative(int fflag, int surface, double latRel, double lonRel, double lat, double lon) {
+    double AirDlat;
+    double AirDlon;
+    // double lat;
+    // double lon;
+    double lonr, latr;
+    double rlon, rlat;
+    int j,m;
+
+    // if (a->bFlags & MODES_ACFLAGS_LATLON_REL_OK) { // Ok to try aircraft relative first
+    //     latr = a->lat;
+    //     lonr = a->lon;
+    // } else if (Modes.bUserFlags & MODES_USER_LATLON_VALID) { // Try ground station relative next
+    //     latr = Modes.fUserLat;
+    //     lonr = Modes.fUserLon;
+    // } else {
+    //     return (-1); // Exit with error - can't do relative if we don't have ref.
+    // }
+
+    lonr = lonRel;
+    latr = latRel;
+
+    if (fflag) { // odd
+        AirDlat = (surface ? 90.0 : 360.0) / 59.0;
+        // lat = a->odd_cprlat;
+        // lon = a->odd_cprlon;
+    } else {    // even
+        AirDlat = (surface ? 90.0 : 360.0) / 60.0;
+        // lat = a->even_cprlat;
+        // lon = a->even_cprlon;
+    }
+
+    // Compute the Latitude Index "j"
+    j = (int) (floor(latr/AirDlat) +
+               trunc(0.5 + cprModFunction((int)latr, (int)AirDlat)/AirDlat - lat/131072));
+    rlat = AirDlat * (j + lat/131072);
+    if (rlat >= 270) rlat -= 360;
+
+    // Check to see that the latitude is in range: -90 .. +90
+    if (rlat < -90 || rlat > 90) {
+        // a->bFlags &= ~MODES_ACFLAGS_LATLON_REL_OK; // This will cause a quick exit next time if no global has been done
+        printf("rlat out of range\n");
+        return (-1);                               // Time to give up - Latitude error
+    }
+
+    // Check to see that answer is reasonable - ie no more than 1/2 cell away 
+    // if (fabs(rlat - a->lat) > (AirDlat/2)) {
+    //     // a->bFlags &= ~MODES_ACFLAGS_LATLON_REL_OK; // This will cause a quick exit next time if no global has been done
+    //     printf("rlat unreasonable\n");
+    //     return (-1);                               // Time to give up - Latitude error 
+    // }
+
+    // Compute the Longitude Index "m"
+    AirDlon = cprDlonFunction(rlat, fflag, surface);
+    m = (int) (floor(lonr/AirDlon) +
+               trunc(0.5 + cprModFunction((int)lonr, (int)AirDlon)/AirDlon - lon/131072));
+    rlon = AirDlon * (m + lon/131072);
+    if (rlon > 180) rlon -= 360;
+
+    // Check to see that answer is reasonable - ie no more than 1/2 cell away
+    // if (fabs(rlon - a->lon) > (AirDlon/2)) {
+    //     // a->bFlags &= ~MODES_ACFLAGS_LATLON_REL_OK; // This will cause a quick exit next time if no global has been done
+    //     printf("rlon unreasonable\n");
+    //     return (-1);                               // Time to give up - Longitude error
+    // }
+
+    // a->lat = rlat;
+    // a->lon = rlon;
+
+    // a->seenLatLon      = a->seen;
+    // a->timestampLatLon = a->timestamp;
+    // a->bFlags         |= (MODES_ACFLAGS_LATLON_VALID | MODES_ACFLAGS_LATLON_REL_OK);
+
+    float d = calculateDistance(rlat, rlon, latRel, lonRel);
+
+    printf("lat %f lon %f, range %.2fkm (%.2fnm)\n", rlat, rlon, d, d/1.852);
+
+    return (0);
+}
+
+
+/**
+ * initial experiment at decoding gps position messages
+ * 
+ * @param msgBitstream the bitstream corresponding to the 'message' part of the ADSB data (56 bits long)
+ * 
+ * +-------+-------+--------+---------+------+------+-------------+-------------+
+ * | TC, 5 | SS, 2 | SAF, 1 | ALT, 12 | T, 1 | F, 1 | LAT-CPR, 17 | LON-CPR, 17 |
+ * +-------+-------+--------+---------+------+------+-------------+-------------+
+*/
+void decodePositionMessage(uint8_t *msgBitstream, uint8_t type)
+{
+  // uint16_t alt = readNBits(msgBitstream, 8, 12);
+  uint8_t frameFlag = readNBits(msgBitstream, 21, 1);
+  uint32_t latCpr = readNBits(msgBitstream, 22, 17);
+  uint32_t lonCpr = readNBits(msgBitstream, 39, 17);
+
+  // printf("alt %u, ff %u latCpr %lx lonCpr %lx\n", alt, frameFlag, latCpr, lonCpr);
+
+  // how do we know if it's surface or not?
+  decodeCPRrelative(frameFlag, false, LAT, LON, latCpr, lonCpr);
 }
 
 bool decodeDF17DF18(uint8_t *bitstream, int bits)
@@ -170,6 +425,12 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
     // The 'type' of the message part is in 5 bits starting at offset 32
     const uint8_t type = readNBits(bitstream, 32, 5);
     printf("Address: %06lx Type: %d\n", address, type);
+
+    // 9 to 18 and 20 to 22 are airborne position reports
+    if (((type >= 9) && (type <= 18)) || ((type >= 20) && (type <= 22))) {
+      decodePositionMessage(&(bitstream[32]), type);
+    }
+
     #else
     // Output in beast binary format for decoding by readsb
     // https://wiki.jetvision.de/wiki/Mode-S_Beast:Contents

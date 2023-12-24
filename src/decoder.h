@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 // Enable binary data output for readsb
-#define BEAST_OUTPUT
+// #define BEAST_OUTPUT
 
 bool decodeModeS(uint8_t *bitstream, int bits);
 
