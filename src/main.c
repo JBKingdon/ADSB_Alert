@@ -12,6 +12,7 @@
 #include "usbd_cdc.h"
 #include <stdbool.h>
 #include "decoder.h"
+#include "contactManager.h"
 
 #define LED_PIN                                GPIO_PIN_3
 #define LED_GPIO_PORT                          GPIOE
@@ -21,11 +22,13 @@ extern USBD_HandleTypeDef hUsbDeviceHS;
 
 #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  4096)   /* number of entries of array aADCxConvertedData[] */
 
+// TODO - is it possible to hold samples as packed 8 bit values?
 /* Variable containing ADC conversions data */
 ALIGN_32BYTES (static uint16_t aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE]);
 
 // The bitstream array holds the 1Mhz bits converted from the raw samples.
 // With 8Msps raw input and only processing each half of the buffer at a time we have
+// TODO current usage should be that the bitstream is max 112 bits long to hold a single message. Confirm and resize.
 #define BITSTREAM_BUFFER_ENTRIES   ((uint32_t)  (ADC_CONVERTED_DATA_BUFFER_SIZE/16))  
 uint8_t bitstream[BITSTREAM_BUFFER_ENTRIES];
 
@@ -44,7 +47,7 @@ const osThreadAttr_t blink01_attributes = {
 
 const osThreadAttr_t statusThread_attributes = {
   .name = "status",
-  .stack_size = 512,
+  .stack_size = 1024,
   .priority = (osPriority_t) osPriorityNormal,  // TODO when the queue is implemented for notifying the work thread this can be lowered
 };
 
@@ -640,20 +643,36 @@ void statusTask(void *argument)
 
   while(true)
   {
-    osDelay(10000);
+    osDelay(2000);
 
     #ifndef BEAST_OUTPUT
 
     const uint32_t now = HAL_GetTick();
     uint32_t diff = now - tLast;
     uint64_t sps = (uint64_t)ADC_CONVERTED_DATA_BUFFER_SIZE*1000 * conversionsCompleted / diff;
-    printf("Time taken: %lu, buffers:%lu sps=%lu\n", diff, conversionsCompleted, (uint32_t)sps);
+    printf("Time taken: %lu, buffers:%lu sps=%lu", diff, conversionsCompleted, (uint32_t)sps);
     tLast = now;
     conversionsCompleted = 0;
 
     if (missedBuffers) {
-      printf("%ld missed buffers\n", missedBuffers);
+      printf(" %ld missed buffers\n", missedBuffers);
       missedBuffers = 0;
+    } else {
+      printf("\n");
+    }
+
+    const int nContacts = getNumContacts();
+    if (nContacts > 0) {
+      printf("\nContacts:\n");
+      printf("Index\tAddr\tRange\tBearing\tMsgs\tAge\n");
+      uint32_t tNow = HAL_GetTick();
+      for(int i=0; i<nContacts; i++) {
+        aircraft_t *aircraft = getContact(i);
+        uint32_t tSince = (tNow - aircraft->timestamp)/1000;
+        printf("%2d: %6lx\t%2.2f\t%3.2f\t%3lu\t%2lu\n", i, aircraft->addr, aircraft->range / 1.852, 
+                aircraft->bearing, aircraft->messages, tSince);
+      }
+      printf("furthest: %d, oldest: %d\n", findMostDistantContact(), findOldestContact());
     }
 
     #endif
@@ -835,7 +854,7 @@ void MPU_Config(void)
 /**
  * send printf to the usb cdc
  * 
- * TODO Implement a better buffering system to make this more efficient`
+ * TODO Implement a better buffering system to make this more efficient
 */
 int _write(int fd, char *ptr, int len)
 {

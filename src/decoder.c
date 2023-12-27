@@ -15,7 +15,10 @@
 #include <string.h>
 #include <math.h>
 
+#include "stm32h7xx_hal.h"
+
 #include "decoder.h"
+#include "contactManager.h"
 
 #include "localConfig.h"
 
@@ -137,44 +140,49 @@ uint32_t modeSChecksum(const uint8_t *bitstream, int bits)
 
 /**
  * Calculate the distance between two sets of coordinates in km
+ * See https://www.movable-type.co.uk/scripts/latlong.html
  * 
- * const R = 6371e3; // metres
- * const φ1 = lat1 * Math.PI/180; // φ, λ in radians
- * const φ2 = lat2 * Math.PI/180;
- * const Δφ = (lat2-lat1) * Math.PI/180;
- * const Δλ = (lon2-lon1) * Math.PI/180;
  * 
- * const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
- *         Math.cos(φ1) * Math.cos(φ2) *
- *         Math.sin(Δλ/2) * Math.sin(Δλ/2);
- * const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
- * 
- * const d = R * c; // in metres
 */
-float calculateDistance(double lat1, double lon1, double lat2, double lon2)
+void calculateDistance(double lat1, double lon1, double lat2, double lon2, distance_bearing_t *result)
 {
   // Radius of earth in km
-  double R = 6371;
+  const double R = 6371;
+  const double DegreesToRadians = M_PI / 180.0;
 
   // Convert to radians
-  double lat1R = lat1 * M_PI / 180.0;
-  double lat2R = lat2 * M_PI / 180.0;
-  double dLatR = (lat2 - lat1) * M_PI / 180.0;
-  double dLonR = (lon2 - lon1) * M_PI / 180.0;
+  const double lat1R = lat1 * DegreesToRadians;
+  const double lat2R = lat2 * DegreesToRadians;
+  const double dLatR = (lat2 - lat1) * DegreesToRadians;
+  const double dLonR = (lon2 - lon1) * DegreesToRadians;
 
   // Haversine formula
 
-  double x = sin(dLatR/2);
-  double y = sin(dLonR/2);
+  const double x = sin(dLatR/2);
+  const double y = sin(dLonR/2);
+
+  const double a = (x * x) + cos(lat1R) * cos(lat2R) * (y * y);
+
+  const double c = 2 * atan2(sqrt(a), sqrt(1-a));
+
+  result->distance = R * c;
+
+  // Can we merge in bearing calculation? λ longitude in radians, φ latitude in radians
   
-  double a = (x * x) + cos(lat1R) * cos(lat2R) * (y * y);
+  // const y = Math.sin(λ2-λ1) * Math.cos(φ2);  // cos(lat2) is used for both
+  // const x = Math.cos(φ1)*Math.sin(φ2) -      // cos(lat1) is used for both
+  //           Math.sin(φ1)*Math.cos(φ2)*Math.cos(λ2-λ1);
+  // const θ = Math.atan2(y, x);
+  // const brng = (θ*180/Math.PI + 360) % 360; // in degrees
 
-  double c = 2 * atan2(sqrt(a), sqrt(1-a));
+  const double yb = sin(dLonR) * cos(lat2R);
+  const double xb = cos(lat1R) * sin(lat2R) - sin(lat1R) * cos(lat2R) * cos(dLonR);
 
-  double distance = R * c;
+  const double brng = atan2(yb, xb) * 180 / M_PI;
 
-  return (float)distance;
+  // TODO may need to remap the output range
 
+  result->bearing = brng;
 }
 
 
@@ -270,6 +278,8 @@ double cprDlonFunction(double lat, int fflag, int surface) {
     return (surface ? 90.0 : 360.0) / cprNFunction(lat, fflag);
 }
 
+// Based on code in dump1090
+
 //=========================================================================
 //
 // This algorithm comes from:
@@ -286,86 +296,144 @@ double cprDlonFunction(double lat, int fflag, int surface) {
 // XXX This has been hacked around for testing. Need to restore self-relative calc and reasonableness tests.
 
 // int decodeCPRrelative(struct aircraft *a, int fflag, int surface, double lonRel, double latRel) {
-int decodeCPRrelative(int fflag, int surface, double latRel, double lonRel, double lat, double lon) {
-    double AirDlat;
-    double AirDlon;
-    // double lat;
-    // double lon;
-    double lonr, latr;
-    double rlon, rlat;
-    int j,m;
+/**
+ * latCPR, lonCPR need to be doubles for the expressions in this function to operate correctly, but are integer outside of here
+ *
+*/
+int decodeCPRrelative(aircraft_t *a, uint32_t address, int fflag, int surface, double latRel, double lonRel, double latCPR, double lonCPR) 
+{
+  double AirDlat;
+  double AirDlon;
+  // double latCPR;
+  // double lonCPR;
+  double lonr, latr;  // coords that we are calculating relative to (inputs)
+  double rlon, rlat;  // result values (outputs)
+  int j, m;
+  aircraft_t * contact = a;
 
-    // if (a->bFlags & MODES_ACFLAGS_LATLON_REL_OK) { // Ok to try aircraft relative first
-    //     latr = a->lat;
-    //     lonr = a->lon;
-    // } else if (Modes.bUserFlags & MODES_USER_LATLON_VALID) { // Try ground station relative next
-    //     latr = Modes.fUserLat;
-    //     lonr = Modes.fUserLon;
-    // } else {
-    //     return (-1); // Exit with error - can't do relative if we don't have ref.
-    // }
+  // if (a->bFlags & MODES_ACFLAGS_LATLON_REL_OK) { // Ok to try aircraft relative first
+  //     latr = a->lat;
+  //     lonr = a->lon;
+  // } else if (Modes.bUserFlags & MODES_USER_LATLON_VALID) { // Try ground station relative next
+  //     latr = Modes.fUserLat;
+  //     lonr = Modes.fUserLon;
+  // } else {
+  //     return (-1); // Exit with error - can't do relative if we don't have ref.
+  // }
 
-    lonr = lonRel;
-    latr = latRel;
+  lonr = lonRel;
+  latr = latRel;
 
-    if (fflag) { // odd
-        AirDlat = (surface ? 90.0 : 360.0) / 59.0;
-        // lat = a->odd_cprlat;
-        // lon = a->odd_cprlon;
-    } else {    // even
-        AirDlat = (surface ? 90.0 : 360.0) / 60.0;
-        // lat = a->even_cprlat;
-        // lon = a->even_cprlon;
+  if (fflag)
+  { // odd
+    AirDlat = (surface ? 90.0 : 360.0) / 59.0;
+    // latCPR = a->odd_cprlat;
+    // lonCPR = a->odd_cprlon;
+  }
+  else
+  { // even
+    AirDlat = (surface ? 90.0 : 360.0) / 60.0;
+    // latCPR = a->even_cprlat;
+    // lonCPR = a->even_cprlon;
+  }
+
+  // Compute the Latitude Index "j"
+  j = (int)(floor(latr / AirDlat) +
+            trunc(0.5 + cprModFunction((int)latr, (int)AirDlat) / AirDlat - latCPR / 131072));
+  rlat = AirDlat * (j + latCPR / 131072);
+  if (rlat >= 270)
+    rlat -= 360;
+
+  // Check to see that the latitude is in range: -90 .. +90
+  if (rlat < -90 || rlat > 90)
+  {
+    // a->bFlags &= ~MODES_ACFLAGS_LATLON_REL_OK; // This will cause a quick exit next time if no global has been done
+    printf("rlat out of range\n");
+    return (-1); // Time to give up - Latitude error
+  }
+
+  // Check to see that answer is reasonable - ie no more than 1/2 cell away
+  // if (fabs(rlat - a->lat) > (AirDlat/2)) {
+  //     // a->bFlags &= ~MODES_ACFLAGS_LATLON_REL_OK; // This will cause a quick exit next time if no global has been done
+  //     printf("rlat unreasonable\n");
+  //     return (-1);                               // Time to give up - Latitude error
+  // }
+
+  // Compute the Longitude Index "m"
+  AirDlon = cprDlonFunction(rlat, fflag, surface);
+  m = (int)(floor(lonr / AirDlon) +
+            trunc(0.5 + cprModFunction((int)lonr, (int)AirDlon) / AirDlon - lonCPR / 131072));
+  rlon = AirDlon * (m + lonCPR / 131072);
+  if (rlon > 180)
+    rlon -= 360;
+
+  // Check to see that answer is reasonable - ie no more than 1/2 cell away
+  // if (fabs(rlon - a->lon) > (AirDlon/2)) {
+  //     // a->bFlags &= ~MODES_ACFLAGS_LATLON_REL_OK; // This will cause a quick exit next time if no global has been done
+  //     printf("rlon unreasonable\n");
+  //     return (-1);                               // Time to give up - Longitude error
+  // }
+
+  // a->lat = rlat;
+  // a->lon = rlon;
+
+  // a->seenLatLon      = a->seen;
+  // a->timestampLatLon = a->timestamp;
+  // a->bFlags         |= (MODES_ACFLAGS_LATLON_VALID | MODES_ACFLAGS_LATLON_REL_OK);
+
+  distance_bearing_t db;
+
+  // the order of coords doesn't affect the distance, but does affect the bearing.
+  // We want the bearing from the receiver to the aircraft, not the aircraft to the receiver.
+  calculateDistance(latRel, lonRel, rlat, rlon, &db);
+
+  // float d = db.distance;
+  // printf("lat %f lon %f, range %.2fkm (%.2fnm), bearing %.1f degrees\n", rlat, rlon, d, d / 1.852, db.bearing);
+
+  // Do we need to create a new contact?
+  if (contact == NULL)
+  {
+    // First check if we need to make space in the list
+    if (contactListIsFull())
+    {
+      printf("Contact list is full\n");
+      // See if the new contact is closer than the most distant existing entry and swap it out if so
+      int mostDistantIndex = findMostDistantContact();
+      aircraft_t *mostDistantContact =  getContact(mostDistantIndex);
+      if (mostDistantContact) {
+        if (db.distance < mostDistantContact->range) {
+          removeAircraft(mostDistantIndex);
+        }
+      }
     }
+    contact = addAircraft(address);
+  }
 
-    // Compute the Latitude Index "j"
-    j = (int) (floor(latr/AirDlat) +
-               trunc(0.5 + cprModFunction((int)latr, (int)AirDlat)/AirDlat - lat/131072));
-    rlat = AirDlat * (j + lat/131072);
-    if (rlat >= 270) rlat -= 360;
 
-    // Check to see that the latitude is in range: -90 .. +90
-    if (rlat < -90 || rlat > 90) {
-        // a->bFlags &= ~MODES_ACFLAGS_LATLON_REL_OK; // This will cause a quick exit next time if no global has been done
-        printf("rlat out of range\n");
-        return (-1);                               // Time to give up - Latitude error
+  if (contact) {
+    uint32_t tNow = HAL_GetTick();
+    contact->timestamp = tNow;
+    contact->timestampLatLon = tNow;
+
+    contact->bearing = db.bearing;
+    contact->range = db.distance;
+    contact->lat = rlat;
+    contact->lon = rlon;
+    if (fflag)
+    { // odd
+      contact->odd_cprlat = latCPR;
+      contact->odd_cprlon = lonCPR;
+      contact->odd_cprtime = tNow;
+    } else { // even
+      contact->even_cprlat = latCPR;
+      contact->even_cprlon = lonCPR;
+      contact->even_cprtime = tNow;
     }
+    contact->messages++;
+  } // if (we have a contact entry to update)
 
-    // Check to see that answer is reasonable - ie no more than 1/2 cell away 
-    // if (fabs(rlat - a->lat) > (AirDlat/2)) {
-    //     // a->bFlags &= ~MODES_ACFLAGS_LATLON_REL_OK; // This will cause a quick exit next time if no global has been done
-    //     printf("rlat unreasonable\n");
-    //     return (-1);                               // Time to give up - Latitude error 
-    // }
-
-    // Compute the Longitude Index "m"
-    AirDlon = cprDlonFunction(rlat, fflag, surface);
-    m = (int) (floor(lonr/AirDlon) +
-               trunc(0.5 + cprModFunction((int)lonr, (int)AirDlon)/AirDlon - lon/131072));
-    rlon = AirDlon * (m + lon/131072);
-    if (rlon > 180) rlon -= 360;
-
-    // Check to see that answer is reasonable - ie no more than 1/2 cell away
-    // if (fabs(rlon - a->lon) > (AirDlon/2)) {
-    //     // a->bFlags &= ~MODES_ACFLAGS_LATLON_REL_OK; // This will cause a quick exit next time if no global has been done
-    //     printf("rlon unreasonable\n");
-    //     return (-1);                               // Time to give up - Longitude error
-    // }
-
-    // a->lat = rlat;
-    // a->lon = rlon;
-
-    // a->seenLatLon      = a->seen;
-    // a->timestampLatLon = a->timestamp;
-    // a->bFlags         |= (MODES_ACFLAGS_LATLON_VALID | MODES_ACFLAGS_LATLON_REL_OK);
-
-    float d = calculateDistance(rlat, rlon, latRel, lonRel);
-
-    printf("lat %f lon %f, range %.2fkm (%.2fnm)\n", rlat, rlon, d, d/1.852);
-
-    return (0);
+  return (0);
 }
-
 
 /**
  * initial experiment at decoding gps position messages
@@ -376,17 +444,22 @@ int decodeCPRrelative(int fflag, int surface, double latRel, double lonRel, doub
  * | TC, 5 | SS, 2 | SAF, 1 | ALT, 12 | T, 1 | F, 1 | LAT-CPR, 17 | LON-CPR, 17 |
  * +-------+-------+--------+---------+------+------+-------------+-------------+
 */
-void decodePositionMessage(uint8_t *msgBitstream, uint8_t type)
+void decodePositionMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type)
 {
   // uint16_t alt = readNBits(msgBitstream, 8, 12);
+  // TODO decode alt depending on 'type' for baro or gps altitude
+
   uint8_t frameFlag = readNBits(msgBitstream, 21, 1);
   uint32_t latCpr = readNBits(msgBitstream, 22, 17);
   uint32_t lonCpr = readNBits(msgBitstream, 39, 17);
 
   // printf("alt %u, ff %u latCpr %lx lonCpr %lx\n", alt, frameFlag, latCpr, lonCpr);
 
-  // how do we know if it's surface or not?
-  decodeCPRrelative(frameFlag, false, LAT, LON, latCpr, lonCpr);
+  // do we have an existing contact record for this address?
+  aircraft_t *aircraft = findAircraft(address);
+
+  // TODO set surface flag based on 'type' (surface are types 5 through 8)
+  decodeCPRrelative(aircraft, address, frameFlag, false, LAT, LON, latCpr, lonCpr);
 }
 
 bool decodeDF17DF18(uint8_t *bitstream, int bits)
@@ -424,11 +497,11 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
 
     // The 'type' of the message part is in 5 bits starting at offset 32
     const uint8_t type = readNBits(bitstream, 32, 5);
-    printf("Address: %06lx Type: %d\n", address, type);
+    // printf("Address: %06lx Type: %d\n", address, type);
 
     // 9 to 18 and 20 to 22 are airborne position reports
     if (((type >= 9) && (type <= 18)) || ((type >= 20) && (type <= 22))) {
-      decodePositionMessage(&(bitstream[32]), type);
+      decodePositionMessage(address, &(bitstream[32]), type);
     }
 
     #else
