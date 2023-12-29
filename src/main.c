@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include "decoder.h"
 #include "contactManager.h"
+#include "localConfig.h"
 
 #define LED_PIN                                GPIO_PIN_3
 #define LED_GPIO_PORT                          GPIOE
@@ -664,15 +665,26 @@ void statusTask(void *argument)
     const int nContacts = getNumContacts();
     if (nContacts > 0) {
       printf("\nContacts:\n");
-      printf("Index\tAddr\tRange\tBearing\tMsgs\tAge\n");
-      uint32_t tNow = HAL_GetTick();
+      printf("Index\t");
+      #ifdef SHOW_ADDR
+      printf("Addr\t");
+      #endif
+      printf("Range\tBearing\tBaroAlt\tGpsAlt\tMsgs\tAge\n");
       for(int i=0; i<nContacts; i++) {
         aircraft_t *aircraft = getContact(i);
-        uint32_t tSince = (tNow - aircraft->timestamp)/1000;
-        printf("%2d: %6lx\t%2.2f\t%3.2f\t%3lu\t%2lu\n", i, aircraft->addr, aircraft->range / 1.852, 
-                aircraft->bearing, aircraft->messages, tSince);
+        if (aircraft) { // in case the number of entries in the list changes since we read it
+          const uint32_t tLocal = aircraft->timestamp; // privatise to avoid race condition
+          const uint32_t tNow = HAL_GetTick();
+          uint32_t tSince = (tNow - tLocal)/1000;
+          printf("%2d: ", i);
+          #ifdef SHOW_ADDR
+          printf("%6lx\t", aircraft->addr);
+          #endif
+          printf("%2.2f\t%3.1f\t%6u\t%6u\t%3lu\t%2lu\n", aircraft->range / 1.852, 
+                  aircraft->bearing+180, aircraft->modeC, aircraft->altitude, aircraft->messages, tSince);
+        }
       }
-      printf("furthest: %d, oldest: %d\n", findMostDistantContact(), findOldestContact());
+      // printf("furthest: %d, oldest: %d\n", findMostDistantContact(), findOldestContact());
     }
 
     #endif

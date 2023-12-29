@@ -20,7 +20,6 @@ typedef struct distance_bearing {
 } distance_bearing_t;
 
 // Struct from dump1090 for holding aircraft info
-// Structure used to describe an aircraft in iteractive mode
 // TODO review the fields to see if any are unnecessary
 struct aircraft {
     uint32_t      addr;           // ICAO address

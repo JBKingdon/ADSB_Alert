@@ -13,6 +13,7 @@ int findMostDistantContact();
 bool contactListIsFull();
 aircraft_t * addAircraft(uint32_t address);
 void removeAircraft(uint32_t address);
+aircraft_t * replaceAircraft(int index, aircraft_t * newAircraft);
 int32_t getNumContacts();
 aircraft_t * getContact(uint32_t index);
 

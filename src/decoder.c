@@ -18,6 +18,7 @@
 #include "stm32h7xx_hal.h"
 
 #include "decoder.h"
+#include "decoderUtils.h"
 #include "contactManager.h"
 
 #include "localConfig.h"
@@ -186,6 +187,7 @@ void calculateDistance(double lat1, double lon1, double lat2, double lon2, dista
 }
 
 
+// Based on code in dump1090
 //
 //=========================================================================
 //
@@ -196,6 +198,8 @@ int cprModFunction(int a, int b) {
     if (res < 0) res += b;
     return res;
 }
+
+// Based on code in dump1090
 //
 //=========================================================================
 //
@@ -263,6 +267,7 @@ int cprNLFunction(double lat) {
     if (lat < 87.00000000) return 2;
     else return 1;
 }
+// Based on code in dump1090
 //
 //=========================================================================
 //
@@ -271,12 +276,168 @@ int cprNFunction(double lat, int fflag) {
     if (nl < 1) nl = 1;
     return nl;
 }
+// Based on code in dump1090
 //
 //=========================================================================
 //
 double cprDlonFunction(double lat, int fflag, int surface) {
     return (surface ? 90.0 : 360.0) / cprNFunction(lat, fflag);
 }
+
+// Based on code in dump1090
+//
+//=========================================================================
+//
+// This algorithm comes from:
+// http://www.lll.lu/~edward/edward/adsb/DecodingADSBposition.html.
+//
+// A few remarks:
+// 1) 131072 is 2^17 since CPR latitude and longitude are encoded in 17 bits.
+//
+/**
+ * Expects data to be passed in the aircraft struct.
+ * NB surface is not implemented.
+ * 
+ * Updates aircraft_t lat, lon and timestampLatLon on success
+ * 
+ * @return 0 for success, -1 for failure
+*/
+int decodeCPR(aircraft_t *a, const int fflag, const bool surface)
+{
+  double AirDlat0 = (surface ? 90.0 : 360.0) / 60.0;
+  double AirDlat1 = (surface ? 90.0 : 360.0) / 59.0;
+  double lat0 = a->even_cprlat;
+  double lat1 = a->odd_cprlat;
+  double lon0 = a->even_cprlon;
+  double lon1 = a->odd_cprlon;
+
+  // Compute the Latitude Index "j"
+  int j = (int)floor(((59 * lat0 - 60 * lat1) / 131072) + 0.5);
+  double rlat0 = AirDlat0 * (cprModFunction(j, 60) + lat0 / 131072);
+  double rlat1 = AirDlat1 * (cprModFunction(j, 59) + lat1 / 131072);
+
+  // time_t now = time(NULL);
+  // double surface_rlat = LAT;
+  double surface_rlon = LON;
+
+  if (surface)
+  {
+    printf("surface not implemented\n");
+    return (-1);
+    // TODO figure out what this is doing
+
+    // // If we're on the ground, make sure we have a (likely) valid Lat/Lon
+    // if ((a->bFlags & MODES_ACFLAGS_LATLON_VALID) && (((int)(now - a->seenLatLon)) < Modes.interactive_display_ttl))
+    // {
+    //   surface_rlat = a->lat;
+    //   surface_rlon = a->lon;
+    // }
+    // else if (Modes.bUserFlags & MODES_USER_LATLON_VALID)
+    // {
+    //   surface_rlat = Modes.fUserLat;
+    //   surface_rlon = Modes.fUserLon;
+    // }
+    // else
+    // {
+    //   // No local reference, give up
+    //   return (-1);
+    // }
+    // rlat0 += floor(surface_rlat / 90.0) * 90.0; // Move from 1st quadrant to our quadrant
+    // rlat1 += floor(surface_rlat / 90.0) * 90.0;
+  }
+  else
+  {
+    if (rlat0 >= 270)
+      rlat0 -= 360;
+    if (rlat1 >= 270)
+      rlat1 -= 360;
+  }
+
+  // Check to see that the latitude is in range: -90 .. +90
+  if (rlat0 < -90 || rlat0 > 90 || rlat1 < -90 || rlat1 > 90)
+    return (-1);
+
+  // Check that both are in the same latitude zone, or abort.
+  if (cprNLFunction(rlat0) != cprNLFunction(rlat1))
+    return (-1);
+
+  // Compute ni and the Longitude Index "m"
+  if (fflag)
+  { // Use odd packet.
+    int ni = cprNFunction(rlat1, 1);
+    int m = (int)floor((((lon0 * (cprNLFunction(rlat1) - 1)) -
+                         (lon1 * cprNLFunction(rlat1))) /
+                        131072.0) +
+                       0.5);
+    a->lon = cprDlonFunction(rlat1, 1, surface) * (cprModFunction(m, ni) + lon1 / 131072);
+    a->lat = rlat1;
+  }
+  else
+  { // Use even packet.
+    int ni = cprNFunction(rlat0, 0);
+    int m = (int)floor((((lon0 * (cprNLFunction(rlat0) - 1)) -
+                         (lon1 * cprNLFunction(rlat0))) /
+                        131072) +
+                       0.5);
+    a->lon = cprDlonFunction(rlat0, 0, surface) * (cprModFunction(m, ni) + lon0 / 131072);
+    a->lat = rlat0;
+  }
+
+  if (surface)
+  {
+    a->lon += floor(surface_rlon / 90.0) * 90.0; // Move from 1st quadrant to our quadrant
+  }
+  else if (a->lon > 180)
+  {
+    a->lon -= 360;
+  }
+
+  // a->seenLatLon = a->seen;
+  a->timestampLatLon = a->timestamp;
+  // a->bFlags |= (MODES_ACFLAGS_LATLON_VALID | MODES_ACFLAGS_LATLON_REL_OK);
+
+  return 0;
+}
+
+// Based on code in dump1090
+
+//=========================================================================
+//
+// In the squawk (identity) field bits are interleaved as follows in
+// (message bit 20 to bit 32):
+//
+// C1-A1-C2-A2-C4-A4-ZERO-B1-D1-B2-D2-B4-D4
+//
+// So every group of three bits A, B, C, D represent an integer from 0 to 7.
+//
+// The actual meaning is just 4 octal numbers, but we convert it into a hex 
+// number tha happens to represent the four octal numbers.
+//
+// For more info: http://en.wikipedia.org/wiki/Gillham_code
+//
+int decodeID13Field(int ID13Field) {
+    int hexGillham = 0;
+
+    if (ID13Field & 0x1000) {hexGillham |= 0x0010;} // Bit 12 = C1
+    if (ID13Field & 0x0800) {hexGillham |= 0x1000;} // Bit 11 = A1
+    if (ID13Field & 0x0400) {hexGillham |= 0x0020;} // Bit 10 = C2
+    if (ID13Field & 0x0200) {hexGillham |= 0x2000;} // Bit  9 = A2
+    if (ID13Field & 0x0100) {hexGillham |= 0x0040;} // Bit  8 = C4
+    if (ID13Field & 0x0080) {hexGillham |= 0x4000;} // Bit  7 = A4
+  //if (ID13Field & 0x0040) {hexGillham |= 0x0800;} // Bit  6 = X  or M 
+    if (ID13Field & 0x0020) {hexGillham |= 0x0100;} // Bit  5 = B1 
+    if (ID13Field & 0x0010) {hexGillham |= 0x0001;} // Bit  4 = D1 or Q
+    if (ID13Field & 0x0008) {hexGillham |= 0x0200;} // Bit  3 = B2
+    if (ID13Field & 0x0004) {hexGillham |= 0x0002;} // Bit  2 = D2
+    if (ID13Field & 0x0002) {hexGillham |= 0x0400;} // Bit  1 = B4
+    if (ID13Field & 0x0001) {hexGillham |= 0x0004;} // Bit  0 = D4
+
+    return (hexGillham);
+    }
+
+// Based on code in dump1090
+
+
 
 // Based on code in dump1090
 
@@ -309,7 +470,7 @@ int decodeCPRrelative(aircraft_t *a, uint32_t address, int fflag, int surface, d
   double lonr, latr;  // coords that we are calculating relative to (inputs)
   double rlon, rlat;  // result values (outputs)
   int j, m;
-  aircraft_t * contact = a;
+  // aircraft_t * contact = a;
 
   // if (a->bFlags & MODES_ACFLAGS_LATLON_REL_OK) { // Ok to try aircraft relative first
   //     latr = a->lat;
@@ -374,63 +535,17 @@ int decodeCPRrelative(aircraft_t *a, uint32_t address, int fflag, int surface, d
   //     return (-1);                               // Time to give up - Longitude error
   // }
 
-  // a->lat = rlat;
-  // a->lon = rlon;
+  a->lat = rlat;
+  a->lon = rlon;
 
   // a->seenLatLon      = a->seen;
-  // a->timestampLatLon = a->timestamp;
+  a->timestampLatLon = a->timestamp;
   // a->bFlags         |= (MODES_ACFLAGS_LATLON_VALID | MODES_ACFLAGS_LATLON_REL_OK);
-
-  distance_bearing_t db;
-
-  // the order of coords doesn't affect the distance, but does affect the bearing.
-  // We want the bearing from the receiver to the aircraft, not the aircraft to the receiver.
-  calculateDistance(latRel, lonRel, rlat, rlon, &db);
 
   // float d = db.distance;
   // printf("lat %f lon %f, range %.2fkm (%.2fnm), bearing %.1f degrees\n", rlat, rlon, d, d / 1.852, db.bearing);
 
-  // Do we need to create a new contact?
-  if (contact == NULL)
-  {
-    // First check if we need to make space in the list
-    if (contactListIsFull())
-    {
-      printf("Contact list is full\n");
-      // See if the new contact is closer than the most distant existing entry and swap it out if so
-      int mostDistantIndex = findMostDistantContact();
-      aircraft_t *mostDistantContact =  getContact(mostDistantIndex);
-      if (mostDistantContact) {
-        if (db.distance < mostDistantContact->range) {
-          removeAircraft(mostDistantIndex);
-        }
-      }
-    }
-    contact = addAircraft(address);
-  }
 
-
-  if (contact) {
-    uint32_t tNow = HAL_GetTick();
-    contact->timestamp = tNow;
-    contact->timestampLatLon = tNow;
-
-    contact->bearing = db.bearing;
-    contact->range = db.distance;
-    contact->lat = rlat;
-    contact->lon = rlon;
-    if (fflag)
-    { // odd
-      contact->odd_cprlat = latCPR;
-      contact->odd_cprlon = lonCPR;
-      contact->odd_cprtime = tNow;
-    } else { // even
-      contact->even_cprlat = latCPR;
-      contact->even_cprlon = lonCPR;
-      contact->even_cprtime = tNow;
-    }
-    contact->messages++;
-  } // if (we have a contact entry to update)
 
   return (0);
 }
@@ -440,14 +555,19 @@ int decodeCPRrelative(aircraft_t *a, uint32_t address, int fflag, int surface, d
  * 
  * @param msgBitstream the bitstream corresponding to the 'message' part of the ADSB data (56 bits long)
  * 
- * +-------+-------+--------+---------+------+------+-------------+-------------+
- * | TC, 5 | SS, 2 | SAF, 1 | ALT, 12 | T, 1 | F, 1 | LAT-CPR, 17 | LON-CPR, 17 |
- * +-------+-------+--------+---------+------+------+-------------+-------------+
 */
 void decodePositionMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type)
 {
-  // uint16_t alt = readNBits(msgBitstream, 8, 12);
-  // TODO decode alt depending on 'type' for baro or gps altitude
+  /** message format
+  * +-------+-------+--------+---------+------+------+-------------+-------------+
+  * | TC, 5 | SS, 2 | SAF, 1 | ALT, 12 | T, 1 | F, 1 | LAT-CPR, 17 | LON-CPR, 17 |
+  * +-------+-------+--------+---------+------+------+-------------+-------------+
+  */
+
+  uint32_t altBaro = 0;
+  uint32_t altGPS = 0;
+
+  const uint32_t tNow = HAL_GetTick();
 
   uint8_t frameFlag = readNBits(msgBitstream, 21, 1);
   uint32_t latCpr = readNBits(msgBitstream, 22, 17);
@@ -458,9 +578,173 @@ void decodePositionMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type
   // do we have an existing contact record for this address?
   aircraft_t *aircraft = findAircraft(address);
 
-  // TODO set surface flag based on 'type' (surface are types 5 through 8)
-  decodeCPRrelative(aircraft, address, frameFlag, false, LAT, LON, latCpr, lonCpr);
-}
+  // Do we need to create a new contact?
+  if (aircraft == NULL)
+  {
+    // First check if we have space in the list
+    if (!contactListIsFull())
+    {
+      aircraft = addAircraft(address);
+      // Initialise the distance to a high value so that we don't fill the table with 0 range entries that can't be replaced
+      if (aircraft) {
+        const float NM_TO_KM = 1.852;
+        aircraft->range = 999 * NM_TO_KM;
+      }
+    }
+  }
+
+  // Set the timestamp to indicate that we have seen the aircraft
+  if (aircraft) {
+    aircraft->timestamp = tNow;
+    aircraft->messages++;
+
+    // contact->timestampLatLon = tNow;
+
+    // contact->bearing = db.bearing;
+    // contact->range = db.distance;
+    // contact->lat = rlat;
+    // contact->lon = rlon;
+
+  } // if (we have a contact entry to update)
+
+  bool useGlobal = false;
+  if (aircraft) {
+    // Do we have existing gps info in the contact?
+    if (frameFlag) {
+      // store the new 'odd' info
+      aircraft->odd_cprlat = latCpr;
+      aircraft->odd_cprlon = lonCpr;
+      aircraft->odd_cprtime = tNow;
+
+      // We need recent 'even' info to go with the new 'odd' info
+      if (aircraft->even_cprtime + 5000 > tNow) {
+        useGlobal = true;
+      }
+    } else {
+      // store the new 'even' info
+      aircraft->even_cprlat = latCpr;
+      aircraft->even_cprlon = lonCpr;
+      aircraft->even_cprtime = tNow;
+
+      // We need recent 'odd' info to go with the new 'even' info
+      if (aircraft->odd_cprtime + 5000 > tNow) {
+        useGlobal = true;
+      }
+    }
+  }
+
+  bool decoded = false;
+  if (useGlobal) {
+    int res = decodeCPR(aircraft, frameFlag, false);
+    decoded = (res == 0);
+  }
+
+  if (decoded) {
+
+    // the order of coords doesn't affect the distance, but does affect the bearing.
+    // We want the bearing from the receiver to the aircraft, not the aircraft to the receiver.
+    distance_bearing_t db;
+    calculateDistance(aircraft->lat, aircraft->lon, LAT, LON, &db);
+
+    // Sometimes we get bad output that we can detect based on unreasonable range
+    if (db.distance > 100) {
+      // range is bad, so don't store the results and clear the data
+      aircraft->lat = 0;
+      aircraft->lon = 0;
+      aircraft->timestampLatLon = 0;
+
+      // Clear the cpr and cpr timestamp?
+      // clear decoded flag?
+
+    } else {
+      // range is good, so store the results
+      aircraft->bearing = db.bearing;
+      aircraft->range = db.distance;
+    }
+
+  } else {
+
+    // if we don't have an existing contact to use we will need a temporary one
+    aircraft_t tempContact;
+    memset(&tempContact, 0, sizeof(tempContact));
+
+    aircraft_t *localContact;
+
+    if (aircraft) {
+      localContact = aircraft;
+    } else {
+      localContact = &tempContact;
+      localContact->addr = address;
+      localContact->timestamp = tNow;
+    }
+
+    // Try relative
+    // TODO set surface flag based on 'type' (surface are types 5 through 8) - or not. Don't need surface for this application
+    // TODO restore normal relative behaviour where it can choose between aircraft relative and rx relative
+    decoded = decodeCPRrelative(localContact, address, frameFlag, false, LAT, LON, latCpr, lonCpr);
+
+    // Possibly replace an existing entry if we know the new one is closer
+    if (aircraft == NULL && decoded == 0) {
+
+      // Need to calculate the distance from the receiver to the new contact
+      distance_bearing_t db;
+      calculateDistance(localContact->lat, localContact->lon, LAT, LON, &db);
+      localContact->range = db.distance;
+      localContact->bearing = db.bearing;
+
+      // Some new contacts have pretty dubious locations, so filter those out
+      if (localContact->range < 100) {
+        printf("new contact distance is %3.1f\n", localContact->range);
+
+        // See if the new contact is closer than the most distant existing entry and swap it out if so
+        int mostDistantIndex = findMostDistantContact();
+        aircraft_t *mostDistantContact =  getContact(mostDistantIndex);
+        if (mostDistantContact) {
+          if (localContact->range < mostDistantContact->range) {
+            printf("replacing %u\n", mostDistantIndex);
+            aircraft = replaceAircraft(mostDistantIndex, &tempContact);
+          }
+        }
+      } // if (new contact is close enough)
+    } // if (might need to replace an existing entry)
+
+  } // if (!decoded)
+
+  // Altitude
+  if (aircraft)
+  {
+    // Decode alt depending on 'type' for baro or gps altitude
+    const uint16_t encodedAlt = readNBits(msgBitstream, 8, 12);
+    if (encodedAlt != 0) {
+      if (type >= 9 && type <= 18) {
+        // barometric alt
+        // Q bit is in the middle of the value
+        bool qBit = (encodedAlt & 0x10) != 0;
+        if (qBit) {
+          // remaining bits encode alt in units of 25 feet, but we have to splice out the Q bit from the middle (!!)
+          altBaro = ((((encodedAlt & 0xFFE0) >> 1) + (encodedAlt & 0xF)) * 25) - 1000;
+        } else {
+          // From dump1090
+          // Make N a 13 bit Gillham coded altitude by inserting M=0 at bit 6
+          int n = ((encodedAlt & 0x0FC0) << 1) | (encodedAlt & 0x003F);
+          n = ModeAToModeC(decodeID13Field(n));
+          if (n < -12) n = 0;
+          altBaro = 100 * n;
+        }
+        aircraft->modeC = altBaro;
+      } else if (type >= 20 && type <= 22) {
+        // gps alt
+        const float METERS_TO_FEET = 3.28084;
+        altGPS = encodedAlt * METERS_TO_FEET;
+        aircraft->altitude = altGPS;
+        printf("altGPS %lu\n", altGPS);
+      } else {
+        printf("Unexpected type: %u\n", type);
+      }
+    } // if (alt != 0)
+  }
+
+} // decodePositionMessage()
 
 bool decodeDF17DF18(uint8_t *bitstream, int bits)
 {
@@ -486,14 +770,16 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
       }
   }
 
-  if (crcOk) {
-
-    // TODO eventually we will need to be updating the contact database instead of printing debug
+  if (crcOk)
+  {
     #ifndef BEAST_OUTPUT
     uint8_t b1 = read8Bits(bitstream, 8);
     uint8_t b2 = read8Bits(bitstream, 16);
     uint8_t b3 = read8Bits(bitstream, 24);
     uint32_t address = (b1 << 16) | (b2 << 8) | b3;
+
+    uint32_t tmp = read24Bits(bitstream, 8);
+    if (tmp != address) printf("don't use read24 for address\n");
 
     // The 'type' of the message part is in 5 bits starting at offset 32
     const uint8_t type = readNBits(bitstream, 32, 5);

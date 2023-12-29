@@ -115,15 +115,26 @@ bool contactListIsFull()
 }
 
 /**
- * Add a new aircraft to the list of contacts
+ * Replace the aircraft at the specified index with the given aircraft.
  * 
- * The returned aircraft_t is initialised with the given address
+ * @return a pointer to the newly replaced aircraft
+*/
+aircraft_t * replaceAircraft(int index, aircraft_t * newAircraft)
+{
+    contacts[index] = *newAircraft;
+    return &contacts[index];
+}
+
+/**
+ * Add a new aircraft to the list of contacts.
  * 
- * Doesn't check for duplicates, so the caller is responsible
+ * The returned aircraft_t is initialised with the given address.
+ * 
+ * Doesn't check for duplicates, so the caller is responsible.
  * 
  * 
  * @param address The address of the aircraft to be added
- * @return The aircraft_t struct for the new aircraft, or NULL if the list is full.
+ * @return aircraft_t* for the new aircraft, or NULL if the list is full.
 */
 aircraft_t * addAircraft(uint32_t address)
 {
