@@ -21,16 +21,22 @@
 
 extern USBD_HandleTypeDef hUsbDeviceHS;
 
-#define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  4096)   /* number of entries of array aADCxConvertedData[] */
+// #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  4096)   /* number of entries of array aADCxConvertedData[] */
+#define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  16384)   /* number of entries of array aADCxConvertedData[] */
 
 // TODO - is it possible to hold samples as packed 8 bit values?
 /* Variable containing ADC conversions data */
 ALIGN_32BYTES (static uint16_t aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE]);
 
+// TODO If we can keep up with real time there's no need to copy to a local buffer
+uint16_t localSamples[ADC_CONVERTED_DATA_BUFFER_SIZE/2];
+
+
 // The bitstream array holds the 1Mhz bits converted from the raw samples.
 // With 8Msps raw input and only processing each half of the buffer at a time we have
 // TODO current usage should be that the bitstream is max 112 bits long to hold a single message. Confirm and resize.
-#define BITSTREAM_BUFFER_ENTRIES   ((uint32_t)  (ADC_CONVERTED_DATA_BUFFER_SIZE/16))  
+// #define BITSTREAM_BUFFER_ENTRIES   ((uint32_t)  (ADC_CONVERTED_DATA_BUFFER_SIZE/16))  
+#define BITSTREAM_BUFFER_ENTRIES   ((uint32_t)  120)  
 uint8_t bitstream[BITSTREAM_BUFFER_ENTRIES];
 
 
@@ -669,19 +675,38 @@ void statusTask(void *argument)
       #ifdef SHOW_ADDR
       printf("Addr\t");
       #endif
-      printf("Range\tBearing\tBaroAlt\tGpsAlt\tMsgs\tAge\n");
+      printf("Range\tBearing\tSpeed\ttrack\tBaroAlt\tGpsAlt\tMsgs\tAge\n");
       for(int i=0; i<nContacts; i++) {
         aircraft_t *aircraft = getContact(i);
         if (aircraft) { // in case the number of entries in the list changes since we read it
+
+          // By comparing the track and the bearing we can tell which aircraft are closing
+          // We need to have lat/lon and track/speed info to do this
+          char closing = ' ';
+          if (aircraft->speed != 0 && aircraft->lat != 0) {
+            const int bearing = aircraft->bearing;
+            // if (bearing == 0) {
+            //   printf("lat %f lon %f time %lu\n", aircraft->lat, aircraft->lon, aircraft->timestampLatLon);
+            // }
+            const int track = aircraft->track;
+            int trackDiff = abs(track - bearing);
+            // Allow for the discontinuity 359 to 0
+            if (trackDiff > 180) {
+              trackDiff = 360 - trackDiff;
+            }
+            // printf("bearing %d, track %d, diff %d\n", bearing, track, trackDiff);
+            if (trackDiff < 90) closing = 'C';
+          }
+
           const uint32_t tLocal = aircraft->timestamp; // privatise to avoid race condition
           const uint32_t tNow = HAL_GetTick();
           uint32_t tSince = (tNow - tLocal)/1000;
-          printf("%2d: ", i);
+          printf("%2d: %c ", i, closing);
           #ifdef SHOW_ADDR
           printf("%6lx\t", aircraft->addr);
           #endif
-          printf("%2.2f\t%3.1f\t%6u\t%6u\t%3lu\t%2lu\n", aircraft->range / 1.852, 
-                  aircraft->bearing+180, aircraft->modeC, aircraft->altitude, aircraft->messages, tSince);
+          printf("%2.2f\t%3.1f\t%4d\t%4d\t%6u\t%6u\t%3lu\t%2lu\n", aircraft->range / 1.852, 
+                  aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, aircraft->altitude, aircraft->messages, tSince);
         }
       }
       // printf("furthest: %d, oldest: %d\n", findMostDistantContact(), findOldestContact());
@@ -775,7 +800,6 @@ void StartBlink01(void *argument)
 {
   // static uint32_t tLast = 0;
 	// uint32_t count = 0;
-  uint16_t localSamples[ADC_CONVERTED_DATA_BUFFER_SIZE/2];
 
   for(;;)
   {

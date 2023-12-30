@@ -551,7 +551,102 @@ int decodeCPRrelative(aircraft_t *a, uint32_t address, int fflag, int surface, d
 }
 
 /**
- * initial experiment at decoding gps position messages
+ * Find an existing aircraft in the list or add a new one.
+ * 
+ * Returns the existing entry if already in the list, otherwise will add a new one
+ * if there is available space. 
+ * 
+ * @return a pointer to a new or existing aircraft entry, or NULL if there is no space for a new entry.
+*/
+aircraft_t * findOrAddNewAircraft(uint32_t address)
+{
+    // do we have an existing contact record for this address?
+  aircraft_t *aircraft = findAircraft(address);
+
+  // Do we need to create a new contact?
+  if (aircraft == NULL)
+  {
+    // First check if we have space in the list
+    if (!contactListIsFull())
+    {
+      aircraft = addAircraft(address);
+      // Initialise the distance to a high value so that we don't fill the table with 0 range entries that can't be replaced
+      if (aircraft) {
+        const float NM_TO_KM = 1.852;
+        aircraft->range = 999 * NM_TO_KM;
+      }
+    }
+  }
+
+  return aircraft;
+}
+
+/**
+ * Decode velocity messages
+ * 
+ * see https://mode-s.org/decode/content/ads-b/5-airborne-velocity.html
+ * 
+ * Will update aircraft->speed, aircraft->track and aircraft->messages on success
+ * 
+ * @param address the address of the aircraft (24 bits) // TODO change to passing in the *aircraft?
+ * @param msgBitstream the bitstream corresponding to the 'message' part of the ADSB data (56 bits long)
+ *
+*/
+void decodeVelocityMessage(uint32_t address, uint8_t *msgBitstream)
+{
+  // format:
+  // TC 5 |ST 3|IC 1|IFR 1|NUC 3|V_EW 11|V_NS 11|VrSrc1|Svr1|VR 9      |RESV 2|SDif 1|DAlt 7  |
+
+  const uint8_t subType = readNBits(msgBitstream, 5, 3);
+
+  // printf("velo subType %u\n", subType);
+
+  aircraft_t *aircraft = findOrAddNewAircraft(address);
+
+  if (aircraft) {
+    switch (subType) {
+      case 1:
+        // ground speed (subsonic)
+        { // local scope
+          const bool sEW = readNBits(msgBitstream, 13, 1);
+          int16_t vEW = readNBits(msgBitstream, 14, 10);
+          const bool sNS = readNBits(msgBitstream, 24, 1);
+          int16_t vNS = readNBits(msgBitstream, 25, 10);
+          // All zero values mean no data available
+          if (vEW != 0 && vNS != 0) {
+
+            if (sEW) {
+              vEW = (vEW - 1) * -1;
+            } else {
+              vEW = vEW -1;
+            }
+            if (sNS) {
+              vNS = (vNS - 1) * -1;
+            } else {
+              vNS = vNS - 1;
+            }
+            const float velocity = sqrt(vEW * vEW + vNS * vNS);
+            aircraft->speed = velocity;
+
+            aircraft->track = ((int)(atan2(vEW, vNS) * 180 / M_PI) + 360) % 360;
+
+            aircraft->messages++;
+          }
+        }
+        break;
+      default:
+        printf("unknown velocity subtype %u\n", subType);
+        break;
+    }
+  }
+
+  // vertical rate info
+  // gps vs baro alt delta
+}
+
+
+/**
+ * Decode gps position messages
  * 
  * @param msgBitstream the bitstream corresponding to the 'message' part of the ADSB data (56 bits long)
  * 
@@ -666,13 +761,13 @@ void decodePositionMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type
 
     // if we don't have an existing contact to use we will need a temporary one
     aircraft_t tempContact;
-    memset(&tempContact, 0, sizeof(tempContact));
 
     aircraft_t *localContact;
 
     if (aircraft) {
       localContact = aircraft;
     } else {
+      memset(&tempContact, 0, sizeof(tempContact));
       localContact = &tempContact;
       localContact->addr = address;
       localContact->timestamp = tNow;
@@ -694,14 +789,14 @@ void decodePositionMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type
 
       // Some new contacts have pretty dubious locations, so filter those out
       if (localContact->range < 100) {
-        printf("new contact distance is %3.1f\n", localContact->range);
+        // printf("new contact distance is %3.1f\n", localContact->range);
 
         // See if the new contact is closer than the most distant existing entry and swap it out if so
         int mostDistantIndex = findMostDistantContact();
         aircraft_t *mostDistantContact =  getContact(mostDistantIndex);
         if (mostDistantContact) {
           if (localContact->range < mostDistantContact->range) {
-            printf("replacing %u\n", mostDistantIndex);
+            // printf("replacing %u\n", mostDistantIndex);
             aircraft = replaceAircraft(mostDistantIndex, &tempContact);
           }
         }
@@ -788,6 +883,9 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
     // 9 to 18 and 20 to 22 are airborne position reports
     if (((type >= 9) && (type <= 18)) || ((type >= 20) && (type <= 22))) {
       decodePositionMessage(address, &(bitstream[32]), type);
+    } else if (type == 19) {
+      // Velocity data
+      decodeVelocityMessage(address, &(bitstream[32]));
     }
 
     #else
