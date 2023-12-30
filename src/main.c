@@ -14,12 +14,11 @@
 #include "decoder.h"
 #include "contactManager.h"
 #include "localConfig.h"
+#include "r820t2.h"
 
 #define LED_PIN                                GPIO_PIN_3
 #define LED_GPIO_PORT                          GPIOE
 #define LED_GPIO_CLK_ENABLE()                  __HAL_RCC_GPIOE_CLK_ENABLE()
-
-extern USBD_HandleTypeDef hUsbDeviceHS;
 
 // #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  4096)   /* number of entries of array aADCxConvertedData[] */
 #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  16384)   /* number of entries of array aADCxConvertedData[] */
@@ -40,10 +39,13 @@ uint16_t localSamples[ADC_CONVERTED_DATA_BUFFER_SIZE/2];
 uint8_t bitstream[BITSTREAM_BUFFER_ENTRIES];
 
 
+extern USBD_HandleTypeDef hUsbDeviceHS;
+
+I2C_HandleTypeDef hi2c1;
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
-TIM_HandleTypeDef htim7;
+TIM_HandleTypeDef htim7;  // not used yet, thinking of setting it up for us counter for perf eval
 
 osThreadId_t blink01Handle;
 const osThreadAttr_t blink01_attributes = {
@@ -66,6 +68,8 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM7_Init(void);
+static void MX_I2C1_Init(void);
+
 void StartBlink01(void *argument);
 void statusTask(void *argument);
 void Error_Handler(void);
@@ -104,29 +108,13 @@ int main(void)
   MX_DMA_Init();
   MX_ADC1_Init();
   MX_TIM7_Init();
-
+  MX_I2C1_Init();
 
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
 
   /* Init scheduler */
   osKernelInitialize();
-
-  /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
-  /* USER CODE END RTOS_MUTEX */
-
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
-  /* USER CODE END RTOS_SEMAPHORES */
-
-  /* USER CODE BEGIN RTOS_TIMERS */
-  /* start timers, add new ones, ... */
-  /* USER CODE END RTOS_TIMERS */
-
-  /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
-  /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* creation of blink01 */
@@ -135,27 +123,13 @@ int main(void)
   // status thread
   osThreadNew(statusTask, NULL, &statusThread_attributes);
 
-  /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
-  /* USER CODE END RTOS_THREADS */
-
-  /* USER CODE BEGIN RTOS_EVENTS */
-  /* add events, ... */
-  /* USER CODE END RTOS_EVENTS */
-
   /* Start scheduler */
   osKernelStart();
 
   /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
-  }
-  /* USER CODE END 3 */
+  while (1) {}
 }
 
 
@@ -354,6 +328,42 @@ static void MX_TIM7_Init(void)
 
   /* USER CODE END TIM7_Init 2 */
 
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.Timing = 0x60404E72;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
 /**
@@ -801,25 +811,19 @@ void StartBlink01(void *argument)
   // static uint32_t tLast = 0;
 	// uint32_t count = 0;
 
+  vTaskDelay(1000);
+
+  // Configure the tuner
+  R820T2_init();
+
   for(;;)
   {
     // TODO real thread will use queue based notification
 
-    // HAL_GPIO_TogglePin(LED_GPIO_PORT, LED_PIN);
-    // osDelay(1000);
-    // printf("Hello from printf! %ld\n", count++);
-    
-    // printf("Time taken: %ld\n", t1-t0);
-
-    // uint32_t sysClockFreq;
-    // sysClockFreq = HAL_RCC_GetSysClockFreq();
-
-    // printf("Clock freq %lu\n", sysClockFreq);
-
     if (lowBuf) {
       bool oldHiBuf = hiBuf;
 
-      // Grab the data into the local array as quickly as possible
+      // Grab the data into the local array as quickly as possible - not needed if we can maintain real time
       memcpy(localSamples, aADCxConvertedData, ADC_CONVERTED_DATA_BUFFER_SIZE); // half the buffer, so /2, but 2 bytes per sample so *2
 
       // if hiBuf was set while we were doing the copy then we likely have corrupted data
