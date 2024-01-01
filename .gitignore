@@ -56,3 +56,7 @@ dkms.conf
 
 # everything in .vscode
 .vscode/*
+
+# everything in data
+data/*
+
