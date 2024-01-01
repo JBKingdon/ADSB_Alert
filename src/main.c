@@ -32,7 +32,7 @@
 ALIGN_32BYTES (static uint16_t aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE]);
 
 // TODO If we can keep up with real time there's no need to copy to a local buffer
-uint16_t localSamples[ADC_CONVERTED_DATA_BUFFER_SIZE/2];
+// uint16_t localSamples[ADC_CONVERTED_DATA_BUFFER_SIZE/2];
 
 
 // The bitstream array holds the 1Mhz bits converted from the raw samples.
@@ -53,12 +53,15 @@ SPI_HandleTypeDef hspi1;
 
 TIM_HandleTypeDef htim7;  // not used yet, thinking of setting it up for us counter for perf eval
 
-osThreadId_t blink01Handle;
-const osThreadAttr_t blink01_attributes = {
-  .name = "blink01",
+osThreadId_t demodTaskHandle;
+const osThreadAttr_t demodTask_attributes = {
+  .name = "demodTask",
   .stack_size = 8192, // XXX check regularly
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityRealtime1,
 };
+
+// queue for triggering the sample processing thread
+// osMessageQueueId_t adcQueue;
 
 const osThreadAttr_t statusThread_attributes = {
   .name = "status",
@@ -77,7 +80,7 @@ static void MX_TIM7_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 
-void StartBlink01(void *argument);
+void demodTask(void *argument);
 void statusTask(void *argument);
 void Error_Handler(void);
 
@@ -85,12 +88,16 @@ void LED_Init();
 
 float globalSum = 0;
 
+// Stats
 uint32_t conversionsCompleted = 0;
+uint32_t missedBuffers = 0;
+uint32_t msSpentByDemod = 0;
 
+
+// Flags used by the ISR handlers to indicate which half of the buffer is ready
 bool lowBuf = false;
 bool hiBuf = false;
 
-uint32_t missedBuffers = 0;
 
 int main(void)
 {
@@ -124,9 +131,12 @@ int main(void)
   /* Init scheduler */
   osKernelInitialize();
 
+  // TODO do we need any customised attributes instead of NULL?
+  // adcQueue = osMessageQueueNew(1, 1, NULL);
+
   /* Create the thread(s) */
   /* creation of blink01 */
-  blink01Handle = osThreadNew(StartBlink01, NULL, &blink01_attributes);
+  demodTaskHandle = osThreadNew(demodTask, NULL, &demodTask_attributes);
 
   // status thread
   osThreadNew(statusTask, NULL, &statusThread_attributes);
@@ -759,7 +769,6 @@ void statusTask(void *argument)
 
   while(true)
   {
-    // osDelay(2000);
     vTaskDelay(2000);
 
     #ifndef BEAST_OUTPUT
@@ -778,6 +787,9 @@ void statusTask(void *argument)
       printf("\n");
     }
 
+    printf("ms demod %lu (%lu%%)\n", msSpentByDemod, msSpentByDemod * 100 / diff);
+    msSpentByDemod = 0;
+
     drawBackground();
 
     const int nContacts = getNumContacts();
@@ -795,7 +807,7 @@ void statusTask(void *argument)
       int nApproaching = 0;
       float minRange = 100;
       int32_t closestIndex = -1;
-      printf("\nContacts:\n");
+      printf("\n%d Contacts:\n", nContacts);
       printf("Index\t");
       #ifdef SHOW_ADDR
       printf("Addr\t");
@@ -805,7 +817,7 @@ void statusTask(void *argument)
       for(int i=0; i<nContacts; i++) {
         aircraft_t *aircraft = getContact(i);
         if (aircraft) { // in case the number of entries in the list changes since we read it
-          if (aircraft->timestamp + 120000 > now) {
+          if (aircraft->timestamp + 120000 < now) {
             oldContactIndex = i;
             continue; // SKIP processing old contact
           }
@@ -906,7 +918,7 @@ void statusTask(void *argument)
       printf("ERROR: stack overflow on status task!!\n");
     }
 
-    stackHighWaterMark = uxTaskGetStackHighWaterMark(blink01Handle);
+    stackHighWaterMark = uxTaskGetStackHighWaterMark(demodTaskHandle);
     if (stackHighWaterMark == 0) {
       printf("ERROR: stack overflow on main task!!\n");
     }
@@ -978,11 +990,11 @@ void processBuffer(uint16_t *input, int len)
 }
 
 /**
-  * @brief  Initial testing only
+  * @brief  Task that receives raw ADC samples and processes them to extract ADSB messages
   * @param  argument: Not used
   * @retval None
   */
-void StartBlink01(void *argument)
+void demodTask(void *argument)
 {
   // static uint32_t tLast = 0;
 	// uint32_t count = 0;
@@ -995,19 +1007,26 @@ void StartBlink01(void *argument)
   for(;;)
   {
     // TODO real thread will use queue based notification
+    uint32_t msg; // not used yet
+    // osStatus_t status = osMessageQueueGet(adcQueue, &msg, NULL, osWaitForever);
+    // printf("got msg, status %d\n", status);
+    xTaskNotifyWait(0, 0, &msg, portMAX_DELAY);
+
+    uint32_t tStart = HAL_GetTick();
 
     if (lowBuf) {
-      bool oldHiBuf = hiBuf;
+      // bool oldHiBuf = hiBuf;
 
       // Grab the data into the local array as quickly as possible - not needed if we can maintain real time
-      memcpy(localSamples, aADCxConvertedData, ADC_CONVERTED_DATA_BUFFER_SIZE); // half the buffer, so /2, but 2 bytes per sample so *2
+      // memcpy(localSamples, aADCxConvertedData, ADC_CONVERTED_DATA_BUFFER_SIZE); // half the buffer, so /2, but 2 bytes per sample so *2
 
       // if hiBuf was set while we were doing the copy then we likely have corrupted data
-      if (hiBuf) {
-        printf("ERROR: HI BUF SET, old value was %d\n", oldHiBuf);
-      }
+      // if (hiBuf) {
+      //   printf("ERROR: HI BUF SET, old value was %d\n", oldHiBuf);
+      // }
 
-      processBuffer(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
+      // processBuffer(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
+      processBuffer(aADCxConvertedData, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
 
       lowBuf = false;
     }
@@ -1016,23 +1035,23 @@ void StartBlink01(void *argument)
     if (hiBuf) {
       // printf("hibuf set\n");
 
-      bool oldLoBuf = lowBuf;
+      // bool oldLoBuf = lowBuf;
 
+      // // Grab the data into the local array as quickly as possible
+      // memcpy(localSamples, &(aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE/2]), ADC_CONVERTED_DATA_BUFFER_SIZE); // half the buffer, so /2, but 2 bytes per sample so *2
 
-      // Grab the data into the local array as quickly as possible
-      memcpy(localSamples, &(aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE/2]), ADC_CONVERTED_DATA_BUFFER_SIZE); // half the buffer, so /2, but 2 bytes per sample so *2
+      // // if loBuf was set while we were doing the copy then we likely have corrupted data
+      // if (lowBuf) {
+      //   printf("ERROR: Low BUF SET, old value was %d\n", oldLoBuf);
+      // }
 
-      // if loBuf was set while we were doing the copy then we likely have corrupted data
-      if (lowBuf) {
-        printf("ERROR: Low BUF SET, old value was %d\n", oldLoBuf);
-      }
-
-      processBuffer(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
-
+      processBuffer(&(aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE/2]), ADC_CONVERTED_DATA_BUFFER_SIZE/2);
 
       hiBuf = false;
-
     }
+
+    uint32_t tEnd = HAL_GetTick();
+    msSpentByDemod += tEnd - tStart;
 
   }
 
@@ -1190,6 +1209,15 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
   SCB_InvalidateDCache_by_Addr((uint32_t *) &aADCxConvertedData[0], ADC_CONVERTED_DATA_BUFFER_SIZE);
   if (lowBuf) missedBuffers++;
   lowBuf = true;
+
+  if (demodTaskHandle) {  // need to be careful as the task may not have been started when we first get going
+    BaseType_t taskWoken;
+    xTaskNotifyFromISR(demodTaskHandle , 0, eNoAction, &taskWoken);
+    if (taskWoken == pdTRUE) {
+      portYIELD_FROM_ISR(taskWoken);
+    }
+  }
+  // printf("message sent, status %ld\n", status);
 }
 
 /**
@@ -1204,4 +1232,12 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
   conversionsCompleted++;
   if (hiBuf) missedBuffers++;
   hiBuf = true;
+
+  if (demodTaskHandle) {  // need to be careful as the task may not have been started when we first get going
+    BaseType_t taskWoken;
+    xTaskNotifyFromISR(demodTaskHandle , 0, eNoAction, &taskWoken);
+    if (taskWoken == pdTRUE) {
+      portYIELD_FROM_ISR(taskWoken);
+    }
+  }
 }

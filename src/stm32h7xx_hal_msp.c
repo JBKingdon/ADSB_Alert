@@ -155,7 +155,7 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* hadc)
     // HAL_NVIC_SetPriority(ADC_IRQn, 5, 0);
     // HAL_NVIC_EnableIRQ(ADC_IRQn);
 
-    HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 1, 0);
+    HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 10, 0); // Priority must be less than 5 for freertos
     HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);  
 
   /* USER CODE BEGIN ADC1_MspInit 1 */
