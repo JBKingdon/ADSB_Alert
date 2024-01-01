@@ -152,6 +152,18 @@ aircraft_t * addAircraft(uint32_t address)
     return NULL;
 }
 
+void removeAircraftByIndex(uint32_t index)
+{
+    if (index < num_contacts) {
+        for(int i = index; i < num_contacts-1; i++)
+        {
+            contacts[i] = contacts[i+1];
+        }
+        num_contacts--;
+    }
+}
+
+
 /**
  * Remove a given aircraft from the list of contacts
  * 

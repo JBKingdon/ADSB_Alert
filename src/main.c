@@ -15,10 +15,14 @@
 #include "contactManager.h"
 #include "localConfig.h"
 #include "r820t2.h"
+#include "main.h"
+#include "lcd.h"
+#include "ugui.h"
 
 #define LED_PIN                                GPIO_PIN_3
 #define LED_GPIO_PORT                          GPIOE
 #define LED_GPIO_CLK_ENABLE()                  __HAL_RCC_GPIOE_CLK_ENABLE()
+
 
 // #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  4096)   /* number of entries of array aADCxConvertedData[] */
 #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  16384)   /* number of entries of array aADCxConvertedData[] */
@@ -44,6 +48,8 @@ extern USBD_HandleTypeDef hUsbDeviceHS;
 I2C_HandleTypeDef hi2c1;
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
+SPI_HandleTypeDef hspi1;
+
 
 TIM_HandleTypeDef htim7;  // not used yet, thinking of setting it up for us counter for perf eval
 
@@ -69,6 +75,7 @@ static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM7_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_SPI1_Init(void);
 
 void StartBlink01(void *argument);
 void statusTask(void *argument);
@@ -109,6 +116,7 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM7_Init();
   MX_I2C1_Init();
+  MX_SPI1_Init();
 
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
@@ -173,7 +181,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLM = 5;
   RCC_OscInitStruct.PLL.PLLN = 110;
   RCC_OscInitStruct.PLL.PLLP = 1;
-  RCC_OscInitStruct.PLL.PLLQ = 2;
+  RCC_OscInitStruct.PLL.PLLQ = 5;
   RCC_OscInitStruct.PLL.PLLR = 2;
   RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_2;
   RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
@@ -367,6 +375,46 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES_TXONLY;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_HIGH;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+  // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+  // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
+  // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 0x0;
+  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+  hspi1.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
+  hspi1.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
+  hspi1.Init.TxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
+  hspi1.Init.RxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
+  hspi1.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
+  hspi1.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
+  hspi1.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
+  hspi1.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;
+  hspi1.Init.IOSwap = SPI_IO_SWAP_DISABLE;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
   * Enable DMA controller clock
   */
 static void MX_DMA_Init(void)
@@ -392,8 +440,23 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   LED_Init();
+
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOD, LCD_DC_Pin|LCD_RESET_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : LCD_DC_Pin LCD_RESET_Pin */
+  GPIO_InitStruct.Pin = LCD_DC_Pin|LCD_RESET_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
 
 }
 
@@ -654,13 +717,50 @@ int filteredAmplitudeToBitStream(uint16_t *input, int len, int start)
   return 112;
 }
 
+const uint32_t PlotRadius = 115;
+const UG_U16 BackgroundColour = C_DIM_GRAY;
+
+void drawBackground()
+{
+  // LCD_Fill(0, 0, 239, 239, BackgroundColour);
+  UG_FillScreen(BackgroundColour);
+
+  UG_DrawCircle(120, 120, PlotRadius, C_LIGHT_GRAY);
+
+  // Center marker
+  const uint32_t CenterMarkerSize = 2;
+  UG_DrawTriangle(120-CenterMarkerSize, 120+CenterMarkerSize, 120, 120-CenterMarkerSize, 120+CenterMarkerSize, 120+CenterMarkerSize, C_WHITE);
+
+}
+
 void statusTask(void *argument)
 {
   static uint32_t tLast = 0;
 
+  // ST7789_Init();
+  // ST7789_Fill_Color(DARKBLUE);
+  // ST7789_WriteString(10, 80, "ADSB ALERT", Font_16x26, WHITE, DARKBLUE);
+
+  LCD_init();
+
+  LCD_Fill(0, 0, 239, 239, C_DARK_BLUE);
+  LCD_PutStr(10, 80, "ADSB ALERT", FONT_24X40, C_WHITE, C_DARK_BLUE);
+  LCD_PutStr(20, 120, "V0.0 (alpha)", FONT_16X26, C_WHITE, C_DARK_BLUE);
+  UG_Update();
+
+  vTaskDelay(1000);
+
+  // ST7789_Test();
+
+  vTaskDelay(1000);
+
+  drawBackground();
+  UG_Update();
+
   while(true)
   {
-    osDelay(2000);
+    // osDelay(2000);
+    vTaskDelay(2000);
 
     #ifndef BEAST_OUTPUT
 
@@ -678,21 +778,40 @@ void statusTask(void *argument)
       printf("\n");
     }
 
+    drawBackground();
+
     const int nContacts = getNumContacts();
+
+    UG_FontSelect(FONT_7X12);
+    UG_SetForecolor(C_WHITE);
+    UG_SetBackcolor(BackgroundColour);
+
+    char buf[20];
+    sprintf(buf, "%d ", nContacts);
+
+    UG_PutString(0, 0, buf);
+
     if (nContacts > 0) {
+      int nApproaching = 0;
+      float minRange = 100;
+      int32_t closestIndex = -1;
       printf("\nContacts:\n");
       printf("Index\t");
       #ifdef SHOW_ADDR
       printf("Addr\t");
       #endif
       printf("Range\tBearing\tSpeed\ttrack\tBaroAlt\tGpsAlt\tMsgs\tAge\n");
+      int oldContactIndex = -1;
       for(int i=0; i<nContacts; i++) {
         aircraft_t *aircraft = getContact(i);
         if (aircraft) { // in case the number of entries in the list changes since we read it
-
+          if (aircraft->timestamp + 120000 > now) {
+            oldContactIndex = i;
+            continue; // SKIP processing old contact
+          }
           // By comparing the track and the bearing we can tell which aircraft are closing
           // We need to have lat/lon and track/speed info to do this
-          char closing = ' ';
+          bool closing = false;
           if (aircraft->speed != 0 && aircraft->lat != 0) {
             const int bearing = aircraft->bearing;
             // if (bearing == 0) {
@@ -705,22 +824,79 @@ void statusTask(void *argument)
               trackDiff = 360 - trackDiff;
             }
             // printf("bearing %d, track %d, diff %d\n", bearing, track, trackDiff);
-            if (trackDiff < 90) closing = 'C';
+            if (trackDiff < 90) {
+              closing = true;
+              nApproaching++;
+            }
           }
 
           const uint32_t tLocal = aircraft->timestamp; // privatise to avoid race condition
           const uint32_t tNow = HAL_GetTick();
           uint32_t tSince = (tNow - tLocal)/1000;
-          printf("%2d: %c ", i, closing);
+          printf("%2d: %c ", i, closing ? 'C' : ' ');
           #ifdef SHOW_ADDR
           printf("%6lx\t", aircraft->addr);
           #endif
-          printf("%2.2f\t%3.1f\t%4d\t%4d\t%6u\t%6u\t%3lu\t%2lu\n", aircraft->range / 1.852, 
+          float rangeNM = aircraft->range / 1.852;
+          printf("%2.2f\t%3.1f\t%4d\t%4d\t%6u\t%6u\t%3lu\t%2lu\n", rangeNM, 
                   aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, aircraft->altitude, aircraft->messages, tSince);
-        }
-      }
+
+          if (closing && rangeNM < minRange) {
+            minRange = rangeNM;
+            closestIndex = i;
+          }
+
+          if (rangeNM < 50) {
+            // scale range to the size of the circle for a max 30NM display
+            uint32_t radius = rangeNM * PlotRadius / 30;
+            // and limit so that distant contacts are drawn at the edge
+            if (radius > PlotRadius) radius = PlotRadius;
+            uint16_t cx = 120 + (int)(radius * sin((aircraft->bearing+180)*M_PI/180));
+            uint16_t cy = 120 - (int)(radius * cos((aircraft->bearing+180)*M_PI/180)); // minus since 0 is top of display
+            // printf("drawing at %u %u\n", cx, cy);
+            UG_COLOR contactColour = C_GREEN;
+            if (closing) contactColour = C_RED;
+            // UG_DrawPixel(cx, cy, contactColour);
+            UG_FillFrame(cx-1, cy-1, cx+1, cy+1, contactColour);
+          } // if (rangeNM < 50)
+        } // if (aircraft)
+      } // for (each contact)
       // printf("furthest: %d, oldest: %d\n", findMostDistantContact(), findOldestContact());
+
+      if (oldContactIndex != -1) {
+        removeAircraftByIndex(oldContactIndex);
+      }
+
+      // Show the number of approaching aircraft
+      sprintf(buf, "%d ", nApproaching);
+      UG_PutString(0, 20, buf);
+
+      // Show the closest aircraft info in the top right corner
+      if (closestIndex != -1) {
+        aircraft_t *aircraft = getContact(closestIndex);
+        if (aircraft) {
+          sprintf(buf, "%d", aircraft->modeC);
+          size_t len = strlen(buf);
+          UG_PutString(239-(len * 7), 0, buf);
+
+          sprintf(buf, "%2.1f", minRange);
+          len = strlen(buf);
+          UG_PutString(239-(len * 7), 20, buf);
+
+          sprintf(buf, "%d", aircraft->speed);
+          len = strlen(buf);
+          UG_PutString(239-(len * 7), 40, buf);
+        }
+      } else {
+        // not needed if doing a redraw each time
+        // TODO replace with fill calls
+        // UG_PutString(239-(5*7),  0, "     ");
+        // UG_PutString(239-(4*7), 20, "    ");
+        // UG_PutString(239-(3*7), 40, "   ");
+      }
     }
+
+    UG_Update();
 
     #endif
 
