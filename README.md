@@ -5,12 +5,15 @@ Inspired by MustardTiger on the ExpressLRS discord (see https://github.com/PicoA
 
 Initial prototyping and testing is being done with the R820 beakout board by Eric Brombaugh https://github.com/emeb/r820t2, and a WeAct studio H723 development board https://github.com/WeActStudio/WeActStudio.MiniSTM32H723
 
-Current status: Added message output for consumption by readsb. Contacts confirmed out to 50NM
+Current status: Testing with LCD and ePaper displays to see what might be practical
+
+Testing with multiple displays to check what is possible with the single processor doing message decoding and UI
+![image](https://github.com/JBKingdon/ADSB_Alert/images/adsb-displays.jpg)
 
 Preamble and first 5 bits of a DF17 packet. Sampled at 8 msps, dc offset removed, rectified and filtered
 ![image](https://github.com/JBKingdon/ADSB_Alert/assets/12351913/9e1567e0-9f94-45af-9570-c25a7aae8cf3)
 
-Acknowledgements and Licenses
+## Acknowledgements and Licenses
 
 This project builds on the work of several open source projects whose work is gratefully acknowledged.
 I need to gather together the complete list and the Licenses of each. Obviously at the moment this project
