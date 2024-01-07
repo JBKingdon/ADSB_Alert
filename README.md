@@ -22,3 +22,4 @@ while I'm getting my act together:
 - The LCD driver and graphics library from https://github.com/deividAlfa/ST7789-STM32-uGUI
 - Algorithms for handling coordinates from https://www.movable-type.co.uk/scripts/latlong.html
 - Excellent ADSB documentation from https://mode-s.org/decode/index.html
+- E-paper driver and graphics library from https://github.com/waveshareteam/e-Paper
