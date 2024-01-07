@@ -57,6 +57,23 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define LED_PIN                                GPIO_PIN_3
+#define LED_GPIO_PORT                          GPIOE
+#define LED_GPIO_CLK_ENABLE()                  __HAL_RCC_GPIOE_CLK_ENABLE()
+
+#define EPD_MOSI_Pin GPIO_PIN_1
+#define EPD_MOSI_GPIO_Port GPIOC
+#define EPD_CS_Pin GPIO_PIN_10
+#define EPD_CS_GPIO_Port GPIOE
+#define EPD_DC_Pin GPIO_PIN_12
+#define EPD_DC_GPIO_Port GPIOE
+#define EPD_BUSY_Pin GPIO_PIN_14
+#define EPD_BUSY_GPIO_Port GPIOE
+#define EPD_SCK_Pin GPIO_PIN_10
+#define EPD_SCK_GPIO_Port GPIOB
+#define EPD_RESET_Pin GPIO_PIN_11
+#define EPD_RESET_GPIO_Port GPIOB
+
 #define LCD_DC_Pin GPIO_PIN_5
 #define LCD_DC_GPIO_Port GPIOD
 #define LCD_RESET_Pin GPIO_PIN_6

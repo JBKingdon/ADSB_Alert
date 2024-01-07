@@ -2,8 +2,10 @@
  * Initial beginnings of an ADSB receiver for STM32
  * 
  * NB The WeAct H273 board seems to have issues with startup - why?
- *    Looks like the 3v3 from the stlink doesn't have quite enough oomph
+ *    Looks like the 3v3 from the stlink doesn't have quite enough oomph, use usb power as well
 */
+
+#define WAVESHARE
 
 #include "stm32h7xx_hal.h"
 #include "cmsis_os.h"
@@ -17,11 +19,21 @@
 #include "r820t2.h"
 #include "main.h"
 #include "lcd.h"
-#include "ugui.h"
+// #include "ugui.h"
+// #include "epaper.h"
+#include "EPD_2in9_V2.h"
+#include "perfUtil.h"
 
-#define LED_PIN                                GPIO_PIN_3
-#define LED_GPIO_PORT                          GPIOE
-#define LED_GPIO_CLK_ENABLE()                  __HAL_RCC_GPIOE_CLK_ENABLE()
+// frame buffer for the ePaper display
+// weact version
+// uint8_t image_bw[EPD_W_BUFF_SIZE * EPD_H];
+
+
+// only valid if width is a multiple of 8
+#if EPD_2IN9_V2_WIDTH % 8 != 0
+#error "width not multiple of 8"
+#endif
+uint8_t image_bw[EPD_2IN9_V2_WIDTH / 8 * EPD_2IN9_V2_HEIGHT];
 
 
 // #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  4096)   /* number of entries of array aADCxConvertedData[] */
@@ -35,11 +47,9 @@ ALIGN_32BYTES (static uint16_t aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE
 // uint16_t localSamples[ADC_CONVERTED_DATA_BUFFER_SIZE/2];
 
 
-// The bitstream array holds the 1Mhz bits converted from the raw samples.
-// With 8Msps raw input and only processing each half of the buffer at a time we have
-// TODO current usage should be that the bitstream is max 112 bits long to hold a single message. Confirm and resize.
-// #define BITSTREAM_BUFFER_ENTRIES   ((uint32_t)  (ADC_CONVERTED_DATA_BUFFER_SIZE/16))  
-#define BITSTREAM_BUFFER_ENTRIES   ((uint32_t)  120)  
+// The bitstream array holds one message worth of 1Mhz bits converted from the raw samples.
+// A message contains 112 bits, adding a little to avoid risk of overrun
+#define BITSTREAM_BUFFER_ENTRIES   (120)  
 uint8_t bitstream[BITSTREAM_BUFFER_ENTRIES];
 
 
@@ -49,6 +59,7 @@ I2C_HandleTypeDef hi2c1;
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 SPI_HandleTypeDef hspi1;
+SPI_HandleTypeDef hspi2;
 
 
 TIM_HandleTypeDef htim7;  // not used yet, thinking of setting it up for us counter for perf eval
@@ -65,7 +76,7 @@ const osThreadAttr_t demodTask_attributes = {
 
 const osThreadAttr_t statusThread_attributes = {
   .name = "status",
-  .stack_size = 1024,
+  .stack_size = 4096,
   .priority = (osPriority_t) osPriorityNormal,  // TODO when the queue is implemented for notifying the work thread this can be lowered
 };
 
@@ -79,6 +90,7 @@ static void MX_ADC1_Init(void);
 static void MX_TIM7_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_SPI2_Init(void);
 
 void demodTask(void *argument);
 void statusTask(void *argument);
@@ -87,17 +99,18 @@ void Error_Handler(void);
 void LED_Init();
 
 float globalSum = 0;
+uint16_t globalAvg; // For debugging the DC average
 
 // Stats
 uint32_t conversionsCompleted = 0;
 uint32_t missedBuffers = 0;
 uint32_t msSpentByDemod = 0;
+uint32_t usSpentByDemod = 0;
 
 
 // Flags used by the ISR handlers to indicate which half of the buffer is ready
 bool lowBuf = false;
 bool hiBuf = false;
-
 
 int main(void)
 {
@@ -117,6 +130,9 @@ int main(void)
   /* Configure the system clock */
   SystemClock_Config();
 
+  // Enable the debug counter
+  initPerfUtil();
+
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
@@ -124,6 +140,7 @@ int main(void)
   MX_TIM7_Init();
   MX_I2C1_Init();
   MX_SPI1_Init();
+  MX_SPI2_Init();
 
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
@@ -150,6 +167,43 @@ int main(void)
   while (1) {}
 }
 
+void epd_io_init(void)
+{
+
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOE_CLK_ENABLE();
+
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /*Configure GPIO pin default states */
+  HAL_GPIO_WritePin(EPD_RESET_GPIO_Port, EPD_RESET_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(EPD_DC_GPIO_Port, EPD_DC_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(EPD_CS_GPIO_Port, EPD_CS_Pin, GPIO_PIN_SET);
+  
+
+  /*Configure ePaper GPIO output pins (not spi peripheral pins): DC_Pin RESET_Pin CS pin */
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  
+  GPIO_InitStruct.Pin = EPD_RESET_Pin;
+  HAL_GPIO_Init(EPD_RESET_GPIO_Port, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = EPD_DC_Pin;
+  HAL_GPIO_Init(EPD_DC_GPIO_Port, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = EPD_CS_Pin;
+  HAL_GPIO_Init(EPD_CS_GPIO_Port, &GPIO_InitStruct);
+
+  /* configure the epaper module busy pin */
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+
+  GPIO_InitStruct.Pin = EPD_BUSY_Pin;
+  HAL_GPIO_Init(EPD_BUSY_GPIO_Port, &GPIO_InitStruct);
+  
+}
 
 /**
   * @brief System Clock Configuration
@@ -419,6 +473,42 @@ static void MX_SPI1_Init(void)
   hspi1.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;
   hspi1.Init.IOSwap = SPI_IO_SWAP_DISABLE;
   if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief SPI2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI2_Init(void)
+{
+  /* SPI2 parameter configuration*/
+  hspi2.Instance = SPI2;
+  hspi2.Init.Mode = SPI_MODE_MASTER;
+  hspi2.Init.Direction = SPI_DIRECTION_1LINE;
+  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi2.Init.CLKPolarity = SPI_POLARITY_HIGH;
+  hspi2.Init.CLKPhase = SPI_PHASE_2EDGE;
+  hspi2.Init.NSS = SPI_NSS_SOFT;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+  hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi2.Init.CRCPolynomial = 0x0;
+  hspi2.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+  hspi2.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
+  hspi2.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
+  hspi2.Init.TxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
+  hspi2.Init.RxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
+  hspi2.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
+  hspi2.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
+  hspi2.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
+  hspi2.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;
+  hspi2.Init.IOSwap = SPI_IO_SWAP_DISABLE;
+  if (HAL_SPI_Init(&hspi2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -743,13 +833,240 @@ void drawBackground()
 
 }
 
+#include "GUI_Paint.h"
+#include "ImageData.h"
+#include "Debug.h"
+#include <stdlib.h> // malloc() free()
+
+int EPD_test(void)
+{
+  const uint16_t ROTATION = 270;
+
+  printf("EPD_2IN9_V2_test Demo\r\n");
+  // if (DEV_Module_Init() != 0)
+  // {
+  //   return -1;
+  // }
+
+  printf("e-Paper Init and Clear...\r\n");
+  EPD_2IN9_V2_Init();
+  EPD_2IN9_V2_Clear();
+  DEV_Delay_ms(1000);
+
+  // Create a new image cache
+  UBYTE *BlackImage;
+  UWORD Imagesize = ((EPD_2IN9_V2_WIDTH % 8 == 0) ? (EPD_2IN9_V2_WIDTH / 8) : (EPD_2IN9_V2_WIDTH / 8 + 1)) * EPD_2IN9_V2_HEIGHT;
+  if ((BlackImage = (UBYTE *)malloc(Imagesize)) == NULL)
+  {
+    printf("Failed to apply for black memory...\r\n");
+    return -1;
+  }
+  printf("Paint_NewImage\r\n");
+  Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, ROTATION, WHITE);
+  Paint_Clear(WHITE);
+
+#if 0 // show image for array
+  Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, ROTATION, WHITE);
+  printf("show image for array\r\n");
+  Paint_SelectImage(BlackImage);
+  Paint_Clear(WHITE);
+  Paint_DrawBitMap(gImage_2in9);
+
+  EPD_2IN9_V2_Display(BlackImage);
+  DEV_Delay_ms(3000);
+#endif
+
+#if 1 // Drawing on the image
+  EPD_2IN9_V2_Init_Fast();
+  Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, ROTATION, WHITE);
+  printf("Drawing\r\n");
+  // 1.Select Image
+  Paint_SelectImage(BlackImage);
+  Paint_Clear(WHITE);
+
+  // 2.Drawing on the image
+  printf("Drawing:BlackImage\r\n");
+  Paint_DrawPoint(10, 80, BLACK, DOT_PIXEL_1X1, DOT_STYLE_DFT);
+  Paint_DrawPoint(10, 90, BLACK, DOT_PIXEL_2X2, DOT_STYLE_DFT);
+  Paint_DrawPoint(10, 100, BLACK, DOT_PIXEL_3X3, DOT_STYLE_DFT);
+
+  Paint_DrawLine(20, 70, 70, 120, BLACK, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
+  Paint_DrawLine(70, 70, 20, 120, BLACK, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
+
+  Paint_DrawRectangle(20, 70, 70, 120, BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+  Paint_DrawRectangle(80, 70, 130, 120, BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+
+  Paint_DrawCircle(45, 95, 20, BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+  Paint_DrawCircle(105, 95, 20, WHITE, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+
+  Paint_DrawLine(85, 95, 125, 95, BLACK, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
+  Paint_DrawLine(105, 75, 105, 115, BLACK, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
+
+  Paint_DrawString_EN(10, 0, "waveshare", &Font16, BLACK, WHITE);
+  Paint_DrawString_EN(10, 20, "hello world", &Font12, WHITE, BLACK);
+
+  Paint_DrawNum(10, 33, 123456789, &Font12, BLACK, WHITE);
+  Paint_DrawNum(10, 50, 987654321, &Font16, WHITE, BLACK);
+
+  // Paint_DrawString_CN(130, 0, "���abc", &Font12CN, BLACK, WHITE);
+  // Paint_DrawString_CN(130, 20, "΢ѩ����", &Font24CN, WHITE, BLACK);
+
+  EPD_2IN9_V2_Display_Base(BlackImage);
+  DEV_Delay_ms(3000);
+#endif
+
+#if 1 // Partial refresh, example shows time
+  Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, ROTATION, WHITE);
+  printf("Partial refresh\r\n");
+  Paint_SelectImage(BlackImage);
+
+  PAINT_TIME sPaint_time;
+  sPaint_time.Hour = 12;
+  sPaint_time.Min = 34;
+  sPaint_time.Sec = 56;
+  UBYTE num = 10;
+  for (;;)
+  {
+    sPaint_time.Sec = sPaint_time.Sec + 1;
+    if (sPaint_time.Sec == 60)
+    {
+      sPaint_time.Min = sPaint_time.Min + 1;
+      sPaint_time.Sec = 0;
+      if (sPaint_time.Min == 60)
+      {
+        sPaint_time.Hour = sPaint_time.Hour + 1;
+        sPaint_time.Min = 0;
+        if (sPaint_time.Hour == 24)
+        {
+          sPaint_time.Hour = 0;
+          sPaint_time.Min = 0;
+          sPaint_time.Sec = 0;
+        }
+      }
+    }
+    Paint_ClearWindows(150, 80, 150 + Font20.Width * 7, 80 + Font20.Height, WHITE);
+    Paint_DrawTime(150, 80, &sPaint_time, &Font20, WHITE, BLACK);
+
+    num = num - 1;
+    if (num == 0)
+    {
+      break;
+    }
+    EPD_2IN9_V2_Display_Partial(BlackImage);
+
+    // Does this still work if you suspend the display between updates? Yes
+    EPD_2IN9_V2_Sleep();
+
+    DEV_Delay_ms(500); // Analog clock 1s
+  }
+#endif
+
+#if 1 // show image for array
+  free(BlackImage);
+  printf("show Gray------------------------\r\n");
+  Imagesize = ((EPD_2IN9_V2_WIDTH % 4 == 0) ? (EPD_2IN9_V2_WIDTH / 4) : (EPD_2IN9_V2_WIDTH / 4 + 1)) * EPD_2IN9_V2_HEIGHT;
+  if ((BlackImage = (UBYTE *)malloc(Imagesize)) == NULL)
+  {
+    printf("Failed to apply for black memory...\r\n");
+    return -1;
+  }
+  EPD_2IN9_V2_Gray4_Init();
+  printf("4 grayscale display\r\n");
+  Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, ROTATION, WHITE);
+  Paint_SetScale(4);
+  Paint_Clear(0xff);
+
+  Paint_DrawPoint(10, 80, GRAY4, DOT_PIXEL_1X1, DOT_STYLE_DFT);
+  Paint_DrawPoint(10, 90, GRAY4, DOT_PIXEL_2X2, DOT_STYLE_DFT);
+  Paint_DrawPoint(10, 100, GRAY4, DOT_PIXEL_3X3, DOT_STYLE_DFT);
+  Paint_DrawLine(20, 70, 70, 120, GRAY4, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
+  Paint_DrawLine(70, 70, 20, 120, GRAY4, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
+  Paint_DrawRectangle(20, 70, 70, 120, GRAY4, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+  Paint_DrawRectangle(80, 70, 130, 120, GRAY4, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+  Paint_DrawCircle(45, 95, 20, GRAY4, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+  Paint_DrawCircle(105, 95, 20, GRAY2, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+  Paint_DrawLine(85, 95, 125, 95, GRAY4, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
+  Paint_DrawLine(105, 75, 105, 115, GRAY4, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
+  Paint_DrawString_EN(10, 0, "waveshare", &Font16, GRAY4, GRAY1);
+  Paint_DrawString_EN(10, 20, "hello world", &Font12, GRAY3, GRAY1);
+  Paint_DrawNum(10, 33, 123456789, &Font12, GRAY4, GRAY2);
+  Paint_DrawNum(10, 50, 987654321, &Font16, GRAY1, GRAY4);
+  // Paint_DrawString_CN(150, 0, "���abc", &Font12CN, GRAY4, GRAY1);
+  // Paint_DrawString_CN(150, 20, "���abc", &Font12CN, GRAY3, GRAY2);
+  // Paint_DrawString_CN(150, 40, "���abc", &Font12CN, GRAY2, GRAY3);
+  // Paint_DrawString_CN(150, 60, "���abc", &Font12CN, GRAY1, GRAY4);
+  // Paint_DrawString_CN(150, 80, "΢ѩ����", &Font24CN, GRAY1, GRAY4);
+  EPD_2IN9_V2_4GrayDisplay(BlackImage);
+  DEV_Delay_ms(3000);
+
+  // Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, 0, WHITE);
+  // Paint_SetScale(4);
+  // Paint_Clear(WHITE);
+  // Paint_DrawBitMap(gImage_2in9_4Gray);
+  // EPD_2IN9_V2_4GrayDisplay(BlackImage);
+  // DEV_Delay_ms(3000);
+
+#endif
+
+  printf("Clear...\r\n");
+  EPD_2IN9_V2_Init();
+  EPD_2IN9_V2_Clear();
+
+  printf("Goto Sleep...\r\n");
+  EPD_2IN9_V2_Sleep();
+  free(BlackImage);
+  BlackImage = NULL;
+  DEV_Delay_ms(2000); // important, at least 2s
+  // close 5V
+  // printf("close 5V, Module enters 0 power consumption ...\r\n");
+  // DEV_Module_Exit();
+  return 0;
+}
+
 void statusTask(void *argument)
 {
   static uint32_t tLast = 0;
+  char buf[40]; // for generating strings for the displays
+  sFONT * contactListFont = &Font8;
 
-  // ST7789_Init();
-  // ST7789_Fill_Color(DARKBLUE);
-  // ST7789_WriteString(10, 80, "ADSB ALERT", Font_16x26, WHITE, DARKBLUE);
+  epd_io_init();
+
+  // printf("calling EPD_test\n");
+  // EPD_test();
+
+  const uint16_t EPD_ROTATION = 270;
+
+  // Splash screen
+
+  Paint_NewImage(image_bw, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, EPD_ROTATION, WHITE);
+  Paint_Clear(WHITE);
+
+  {
+    char * str = "ADSB ALERT";
+
+    int strLenP = strlen(str) * Font24.Width;
+
+    int x = (EPD_2IN9_V2_HEIGHT - strLenP) / 2;  // X = Height, Y = Width
+    int y = (EPD_2IN9_V2_WIDTH / 2) - 24;
+
+    // epd_paint_showString(x, y, (uint8_t*)str, EPD_FONT_SIZE24x12, EPD_COLOR_BLACK);
+    Paint_DrawString_EN(x, y, str, &Font24, BLACK, WHITE);
+  }
+  {
+    char * str = "Hello Discord!";
+
+    int strLenP = strlen(str) * 6;
+
+    int x = (EPD_2IN9_V2_HEIGHT - strLenP) / 2;
+    int y = (EPD_2IN9_V2_WIDTH / 2) - 6 + 24;
+
+    // epd_paint_showString(x, y, (uint8_t*)str, EPD_FONT_SIZE12x6, EPD_COLOR_BLACK);
+    Paint_DrawString_EN(x, y, str, &Font12, BLACK, WHITE);
+  }
+
+  EPD_2IN9_V2_Init();
+  EPD_2IN9_V2_Display_Base(image_bw);
+  EPD_2IN9_V2_Sleep();
 
   LCD_init();
 
@@ -762,16 +1079,46 @@ void statusTask(void *argument)
 
   // ST7789_Test();
 
-  vTaskDelay(1000);
-
   drawBackground();
   UG_Update();
+
+  uint32_t cs, ce;
+
+  #ifdef WAVESHARE
+
+  // Clear the splash screen to minimise ghosting
+  EPD_2IN9_V2_Init();
+  EPD_2IN9_V2_Clear();
+  EPD_2IN9_V2_Sleep();
+
+  #else
+  cs = getCycles();
+  epd_init();
+  ce = getCycles();
+  printf("EPD init %lu\n", getDeltaUs(cs, ce));
+
+  cs = getCycles();
+  epd_paint_clear(EPD_COLOR_WHITE);
+  ce = getCycles();
+  printf("EPD clear %lu\n", getDeltaUs(cs, ce));
+
+  epd_paint_showString(0, 0, (uint8_t*)"Contacts ", EPD_FONT_SIZE12x6, EPD_COLOR_BLACK);
+
+  cs = getCycles();
+  epd_displayBW(image_bw);
+  ce = getCycles();
+  printf("EPD display %lu\n", getDeltaUs(cs, ce));
+
+	epd_enter_deepsleepmode(EPD_DEEPSLEEP_MODE1);
+  #endif
 
   while(true)
   {
     vTaskDelay(2000);
 
     #ifndef BEAST_OUTPUT
+
+    Paint_Clear(WHITE);
 
     const uint32_t now = HAL_GetTick();
     uint32_t diff = now - tLast;
@@ -787,8 +1134,19 @@ void statusTask(void *argument)
       printf("\n");
     }
 
-    printf("ms demod %lu (%lu%%)\n", msSpentByDemod, msSpentByDemod * 100 / diff);
-    msSpentByDemod = 0;
+    // printf("ms demod %lu (%lu%%)\n", msSpentByDemod, msSpentByDemod * 100 / diff);
+    // msSpentByDemod = 0;
+
+    uint32_t demodPercent = usSpentByDemod / (diff * 10);
+
+    printf("us demod %lu (%lu%%)\n", usSpentByDemod, demodPercent);
+    usSpentByDemod = 0;
+
+    // Write the demod % to the bottom of the display
+    // sprintf(buf, "Demod %lu%%", demodPercent);
+    // Paint_DrawString_EN(0, EPD_2IN9_V2_WIDTH-12, buf, &Font12, BLACK, WHITE);
+
+    // printf("average %u\n", globalAvg);
 
     drawBackground();
 
@@ -798,10 +1156,10 @@ void statusTask(void *argument)
     UG_SetForecolor(C_WHITE);
     UG_SetBackcolor(BackgroundColour);
 
-    char buf[20];
     sprintf(buf, "%d ", nContacts);
 
     UG_PutString(0, 0, buf);
+
 
     if (nContacts > 0) {
       int nApproaching = 0;
@@ -813,7 +1171,10 @@ void statusTask(void *argument)
       printf("Addr\t");
       #endif
       printf("Range\tBearing\tSpeed\ttrack\tBaroAlt\tGpsAlt\tMsgs\tAge\n");
+      Paint_DrawString_EN(0, 0, " Range Brng  Spd Trk Alt   Msgs Age", contactListFont, BLACK, WHITE);
+
       int oldContactIndex = -1;
+      int epdLine = 1;
       for(int i=0; i<nContacts; i++) {
         aircraft_t *aircraft = getContact(i);
         if (aircraft) { // in case the number of entries in the list changes since we read it
@@ -852,6 +1213,20 @@ void statusTask(void *argument)
           float rangeNM = aircraft->range / 1.852;
           printf("%2.2f\t%3.1f\t%4d\t%4d\t%6u\t%6u\t%3lu\t%2lu\n", rangeNM, 
                   aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, aircraft->altitude, aircraft->messages, tSince);
+
+          // Generate a line for the EPD display
+          if (epdLine < 10 && rangeNM < 100) {
+            sprintf(buf, "%6.1f%6.1f%4d%4d%6u%4lu%4lu", rangeNM, 
+                    aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, 
+                    aircraft->messages, tSince);
+            uint16_t foreground = BLACK, background = WHITE;
+            if (closing) {
+              foreground = WHITE;
+              background = BLACK;
+            }
+            Paint_DrawString_EN(0, epdLine * contactListFont->Height, buf, contactListFont, foreground, background);
+            epdLine++;
+          }
 
           if (closing && rangeNM < minRange) {
             minRange = rangeNM;
@@ -908,7 +1283,19 @@ void statusTask(void *argument)
       }
     }
 
+    // Update the LCD
     UG_Update();
+
+    // Update the epaper display
+    // cs = getCycles();
+    // Takes about 1149933 us
+    EPD_2IN9_V2_Display_Partial(image_bw);
+    // ce = getCycles();
+    // printf("display partial %lu\n", getDeltaUs(cs, ce));
+
+    EPD_2IN9_V2_Sleep();
+
+
 
     #endif
 
@@ -928,8 +1315,28 @@ void statusTask(void *argument)
 
 void processBuffer(uint16_t *input, int len)
 {
-  uint16_t avg = calculateAverage(input, len);
-  // printf("Average: %d\n", avg);
+  #define BUFFERS_FOR_AVG 10
+  static uint16_t nAvgCounter = 0;
+  static uint16_t averages[BUFFERS_FOR_AVG];
+
+  // TODO - we don't really want to be calculating an average on every buffer
+
+  // Just use a fixed value? How much part to part variation is there?
+  globalAvg = 120;
+
+  // This is vulnerable to getting a bad estimate
+  // if (nAvgCounter < BUFFERS_FOR_AVG) {
+  //   // Takes about 53us
+  //   uint16_t avg = calculateAverage(input, len);
+  //   averages[nAvgCounter++] = avg;
+  //   if (nAvgCounter == BUFFERS_FOR_AVG) {
+  //     globalAvg = 0;
+  //     for(int i=0; i<BUFFERS_FOR_AVG; i++) {
+  //       globalAvg += averages[i];
+  //     }
+  //     globalAvg /= BUFFERS_FOR_AVG;
+  //   }
+  // }
 
   uint16_t max;
   // debugging - dump data when there's a strong signal
@@ -945,7 +1352,7 @@ void processBuffer(uint16_t *input, int len)
   for(int i=0; i < len; i++) {
     int t = input[i];
     // DC offset and abs value
-    const uint16_t amp = (t > avg) ? (t - avg) : avg - t;
+    const uint16_t amp = (t > globalAvg) ? (t - globalAvg) : globalAvg - t;
     input[i] = amp;
     if (amp > max) {
       max = amp;
@@ -985,6 +1392,8 @@ void processBuffer(uint16_t *input, int len)
       }
     }
 
+  // } else {
+
   }
 
 }
@@ -1012,7 +1421,8 @@ void demodTask(void *argument)
     // printf("got msg, status %d\n", status);
     xTaskNotifyWait(0, 0, &msg, portMAX_DELAY);
 
-    uint32_t tStart = HAL_GetTick();
+    // uint32_t tStart = HAL_GetTick();
+    uint32_t cyclesStart = getCycles();
 
     if (lowBuf) {
       // bool oldHiBuf = hiBuf;
@@ -1050,8 +1460,11 @@ void demodTask(void *argument)
       hiBuf = false;
     }
 
-    uint32_t tEnd = HAL_GetTick();
-    msSpentByDemod += tEnd - tStart;
+    uint32_t cyclesEnd = getCycles();
+    usSpentByDemod += getDeltaUs(cyclesStart, cyclesEnd);
+
+    // uint32_t tEnd = HAL_GetTick();
+    // msSpentByDemod += tEnd - tStart;
 
   }
 
