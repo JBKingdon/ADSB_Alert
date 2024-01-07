@@ -8,7 +8,7 @@ Initial prototyping and testing is being done with the R820 beakout board by Eri
 Current status: Testing with LCD and ePaper displays to see what might be practical
 
 Testing with multiple displays to check what is possible with the single processor doing message decoding and UI
-![image](https://github.com/JBKingdon/ADSB_Alert/images/adsb-displays.jpg)
+![image](https://github.com/JBKingdon/ADSB_Alert/blob/main/images/adsb-displays.jpg)
 
 Preamble and first 5 bits of a DF17 packet. Sampled at 8 msps, dc offset removed, rectified and filtered
 ![image](https://github.com/JBKingdon/ADSB_Alert/assets/12351913/9e1567e0-9f94-45af-9570-c25a7aae8cf3)
