@@ -3,16 +3,18 @@
 
 #include "perfUtil.h"
 
+// XXX This doesn't work unless the cpu has been recently reset with the stlink - what's missing?
 void initPerfUtil()
 {
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->LAR = 0xC5ACCE55;
+    DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
 uint32_t getCycles()
 {
-    uint32_t cycles = DWT->CYCCNT;
-
+    const uint32_t cycles = DWT->CYCCNT;
     return cycles;
 }
 
