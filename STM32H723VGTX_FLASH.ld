@@ -151,6 +151,15 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM_D1
 
+  /* Fast data section */
+  . = ALIGN(4);
+  .fast_data (NOLOAD) :
+  {
+    /* I have no idea what's needed here */
+    *(.DTCMRAM_section) 
+    . = ALIGN(4);
+  } >DTCMRAM
+
   /* User_heap_stack section, used to check that there is enough RAM left */
   ._user_heap_stack :
   {

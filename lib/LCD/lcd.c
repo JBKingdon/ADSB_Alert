@@ -65,7 +65,7 @@ config_t config = {
 };
 
 #ifdef LCD_LOCAL_FB
-static uint16_t fb[LCD_WIDTH*LCD_HEIGHT];
+__attribute__((section(".fast_data"))) static uint16_t fb[LCD_WIDTH*LCD_HEIGHT];
 #endif
 
 static UG_GUI gui;

@@ -232,7 +232,7 @@ static void EPD_2IN9_V2_TurnOnDisplay_Partial(void)
 
 	// Takes about a second, so release the thread for most of that
 	// XXX calling osDelay has caused some lockups, so keep an eye on this one
-	osDelay(900);
+	osDelay(950);
 
 	EPD_2IN9_V2_ReadBusy();
 }

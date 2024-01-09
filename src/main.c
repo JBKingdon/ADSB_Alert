@@ -10,6 +10,7 @@
 #include "stm32h7xx_hal.h"
 #include "cmsis_os.h"
 #include <stdio.h>
+// #include <stdlib.h> // malloc() free()
 #include "usb_device.h"
 #include "usbd_cdc.h"
 #include <stdbool.h>
@@ -18,21 +19,22 @@
 #include "localConfig.h"
 #include "r820t2.h"
 #include "main.h"
-#include "lcd.h"
+#include "lcd.h"      // For small LCD panel
 // #include "ugui.h"
 // #include "epaper.h"
-#include "EPD_2in9_V2.h"
-#include "perfUtil.h"
+#include "EPD_2in9_V2.h"  // Waveshare library for ePaper display
+#include "GUI_Paint.h"    // UI library for the ePaper display
+// #include "ImageData.h" // for the ePaper test code
+// #include "Debug.h"        // for the ePaper library
 
-// frame buffer for the ePaper display
-// weact version
-// uint8_t image_bw[EPD_W_BUFF_SIZE * EPD_H];
+#include "perfUtil.h"
 
 
 // only valid if width is a multiple of 8
 #if EPD_2IN9_V2_WIDTH % 8 != 0
 #error "width not multiple of 8"
 #endif
+__attribute__((section(".fast_data")))
 uint8_t image_bw[EPD_2IN9_V2_WIDTH / 8 * EPD_2IN9_V2_HEIGHT];
 
 
@@ -42,9 +44,6 @@ uint8_t image_bw[EPD_2IN9_V2_WIDTH / 8 * EPD_2IN9_V2_HEIGHT];
 // TODO - is it possible to hold samples as packed 8 bit values?
 /* Variable containing ADC conversions data */
 ALIGN_32BYTES (static uint16_t aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE]);
-
-// TODO If we can keep up with real time there's no need to copy to a local buffer
-// uint16_t localSamples[ADC_CONVERTED_DATA_BUFFER_SIZE/2];
 
 
 // The bitstream array holds one message worth of 1Mhz bits converted from the raw samples.
@@ -62,24 +61,29 @@ SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
 
 
-TIM_HandleTypeDef htim7;  // not used yet, thinking of setting it up for us counter for perf eval
+TIM_HandleTypeDef htim7;  // not used yet
 
 osThreadId_t demodTaskHandle;
+osThreadId_t epaperTID;
+osThreadId_t statusTID;
+
 const osThreadAttr_t demodTask_attributes = {
   .name = "demodTask",
   .stack_size = 8192, // XXX check regularly
   .priority = (osPriority_t) osPriorityRealtime1,
 };
 
-// queue for triggering the sample processing thread
-// osMessageQueueId_t adcQueue;
-
 const osThreadAttr_t statusThread_attributes = {
   .name = "status",
   .stack_size = 4096,
-  .priority = (osPriority_t) osPriorityNormal,  // TODO when the queue is implemented for notifying the work thread this can be lowered
+  .priority = (osPriority_t) osPriorityNormal,
 };
 
+const osThreadAttr_t epaperThread_attributes = {
+  .name = "epaper",
+  .stack_size = 4096,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
 
 void SystemClock_Config(void);
 // static void MPU_Initialize(void);
@@ -94,19 +98,18 @@ static void MX_SPI2_Init(void);
 
 void demodTask(void *argument);
 void statusTask(void *argument);
+void epaperTask(void *argument);
 void Error_Handler(void);
 
 void LED_Init();
 
-float globalSum = 0;
 uint16_t globalAvg; // For debugging the DC average
 
 // Stats
 uint32_t conversionsCompleted = 0;
 uint32_t missedBuffers = 0;
-uint32_t msSpentByDemod = 0;
 uint32_t usSpentByDemod = 0;
-
+uint32_t demodPercent = 0;
 
 // Flags used by the ISR handlers to indicate which half of the buffer is ready
 bool lowBuf = false;
@@ -145,18 +148,21 @@ int main(void)
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
 
+  // HAL_Delay(2000); // allow the usb serial to connect for debug
+
   /* Init scheduler */
   osKernelInitialize();
 
-  // TODO do we need any customised attributes instead of NULL?
-  // adcQueue = osMessageQueueNew(1, 1, NULL);
-
-  /* Create the thread(s) */
-  /* creation of blink01 */
+  // Create the thread(s)
+  // If there isn't enough heap osThreadNew fails and returns NULL,
+  // More heap can be added in FreeRTOSConfig.h.
   demodTaskHandle = osThreadNew(demodTask, NULL, &demodTask_attributes);
 
+  // epaper thread
+  epaperTID = osThreadNew(epaperTask, NULL, &epaperThread_attributes);
+
   // status thread
-  osThreadNew(statusTask, NULL, &statusThread_attributes);
+  statusTID = osThreadNew(statusTask, NULL, &statusThread_attributes);
 
   /* Start scheduler */
   osKernelStart();
@@ -560,24 +566,6 @@ static void MX_GPIO_Init(void)
 
 }
 
-
-// int doFloatTest() 
-// {
-
-//   float a = 3.14159f;
-//   float b = 2.71828f;
-
-//   float sum = 0.0f;
-//   for(int i=0; i<5000000; i++) {
-//     sum += a * b; 
-//   }
-
-//   // printf("Sum is: %f\n", sum);
-//   globalSum += sum;
-
-//   return 0;
-// }
-
 /**
  * Calculate the average value of the input array
 */
@@ -833,11 +821,6 @@ void drawBackground()
 
 }
 
-#include "GUI_Paint.h"
-#include "ImageData.h"
-#include "Debug.h"
-#include <stdlib.h> // malloc() free()
-
 int EPD_test(void)
 {
   const uint16_t ROTATION = 270;
@@ -1023,21 +1006,22 @@ int EPD_test(void)
   return 0;
 }
 
-void statusTask(void *argument)
+/**
+ * Task dedicated to maintaining the epaper display with it's very slow update rate
+*/
+void epaperTask(void *argument)
 {
-  static uint32_t tLast = 0;
+  const uint16_t EPD_ROTATION = 270;
+
+  // uint32_t cs, ce;
+
+  // static uint32_t tLast = 0;
   char buf[40]; // for generating strings for the displays
-  sFONT * contactListFont = &Font8;
+  sFONT * contactListFont = &Font12;
 
   epd_io_init();
 
-  // printf("calling EPD_test\n");
-  // EPD_test();
-
-  const uint16_t EPD_ROTATION = 270;
-
   // Splash screen
-
   Paint_NewImage(image_bw, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, EPD_ROTATION, WHITE);
   Paint_Clear(WHITE);
 
@@ -1049,24 +1033,152 @@ void statusTask(void *argument)
     int x = (EPD_2IN9_V2_HEIGHT - strLenP) / 2;  // X = Height, Y = Width
     int y = (EPD_2IN9_V2_WIDTH / 2) - 24;
 
-    // epd_paint_showString(x, y, (uint8_t*)str, EPD_FONT_SIZE24x12, EPD_COLOR_BLACK);
     Paint_DrawString_EN(x, y, str, &Font24, BLACK, WHITE);
   }
   {
-    char * str = "Hello Discord!";
+    char * str = "v0.0.0";
 
-    int strLenP = strlen(str) * 6;
+    int strLenP = strlen(str) * Font12.Width;
 
     int x = (EPD_2IN9_V2_HEIGHT - strLenP) / 2;
     int y = (EPD_2IN9_V2_WIDTH / 2) - 6 + 24;
 
-    // epd_paint_showString(x, y, (uint8_t*)str, EPD_FONT_SIZE12x6, EPD_COLOR_BLACK);
     Paint_DrawString_EN(x, y, str, &Font12, BLACK, WHITE);
   }
 
   EPD_2IN9_V2_Init();
   EPD_2IN9_V2_Display_Base(image_bw);
   EPD_2IN9_V2_Sleep();
+
+  vTaskDelay(2000);
+
+  // Clear the splash screen to minimise ghosting
+  EPD_2IN9_V2_Init();
+  EPD_2IN9_V2_Clear();
+  EPD_2IN9_V2_Sleep();
+
+  TickType_t lastWakeTime = xTaskGetTickCount();
+
+  // Round to nearest 5 seconds
+  lastWakeTime = lastWakeTime - (lastWakeTime % 5000);
+
+  while(true)
+  {
+    vTaskDelayUntil(&lastWakeTime, 5000);
+
+    Paint_Clear(WHITE);
+
+    // Display uptime
+    const uint32_t tSeconds = lastWakeTime / 1000;
+
+    sprintf(buf, "uptime: %lu:%02lu:%02lu", tSeconds / 3600, (tSeconds / 60) % 60, tSeconds % 60);
+    Paint_DrawString_EN(EPD_2IN9_V2_HEIGHT - (Font12.Width * strlen(buf)), 128-Font12.Height, buf, &Font12, BLACK, WHITE);
+
+    // Display the time used for decoding the RF
+    sprintf(buf, "demod: %2lu%%", demodPercent);
+    Paint_DrawString_EN(0, 128-Font12.Height, buf, &Font12, BLACK, WHITE);
+
+    const int nContacts = getNumContacts();
+
+    if (nContacts > 0) {
+      // float minRange = 100;
+      // int32_t closestIndex = -1;
+
+      Paint_DrawString_EN(0, 0, " Range Brng  Spd Trk Alt   Msgs Age", contactListFont, BLACK, WHITE);
+
+      int epdLine = 1;
+      for(int i=0; i<nContacts; i++) {
+        aircraft_t *aircraft = getContact(i);
+        if (aircraft) { // in case the number of entries in the list changes since we read it
+
+          // By comparing the track and the bearing we can tell which aircraft are closing
+          // We need to have lat/lon and track/speed info to do this
+          bool closing = false;
+          if (aircraft->speed != 0 && aircraft->lat != 0) {
+            const int bearing = aircraft->bearing;
+            const int track = aircraft->track;
+            int trackDiff = abs(track - bearing);
+            // Allow for the discontinuity 359 to 0
+            if (trackDiff > 180) {
+              trackDiff = 360 - trackDiff;
+            }
+            if (trackDiff < 90) {
+              closing = true;
+            }
+          }
+
+          const uint32_t tLocal = aircraft->timestamp; // privatise to avoid race condition
+          const uint32_t tNow = HAL_GetTick();
+          uint32_t tSince = (tNow - tLocal)/1000;
+          float rangeNM = aircraft->range / 1.852;
+
+          // Generate a line for the EPD display
+          if (epdLine < 10 && rangeNM < 100) {
+            sprintf(buf, "%6.1f%6.1f%4d%4d%6u%4lu%4lu", rangeNM, 
+                    aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, 
+                    aircraft->messages, tSince);
+            uint16_t foreground = BLACK, background = WHITE;
+            if (closing) {
+              foreground = WHITE;
+              background = BLACK;
+            }
+            Paint_DrawString_EN(0, epdLine * contactListFont->Height, buf, contactListFont, foreground, background);
+            epdLine++;
+            if (epdLine >= 10) break; // no need to process more aircraft if we're out of display lines
+          }
+
+          // if (closing && rangeNM < minRange) {
+          //   minRange = rangeNM;
+          //   closestIndex = i;
+          // }
+
+          // Radar plot - old code for the LCD, might be useful later
+          // if (rangeNM < 50) {
+          //   // scale range to the size of the circle for a max 30NM display
+          //   uint32_t radius = rangeNM * PlotRadius / 30;
+          //   // and limit so that distant contacts are drawn at the edge
+          //   if (radius > PlotRadius) radius = PlotRadius;
+          //   uint16_t cx = 120 + (int)(radius * sin((aircraft->bearing+180)*M_PI/180));
+          //   uint16_t cy = 120 - (int)(radius * cos((aircraft->bearing+180)*M_PI/180)); // minus since 0 is top of display
+          //   // printf("drawing at %u %u\n", cx, cy);
+          //   UG_COLOR contactColour = C_GREEN;
+          //   if (closing) contactColour = C_RED;
+          //   // UG_DrawPixel(cx, cy, contactColour);
+          //   UG_FillFrame(cx-1, cy-1, cx+1, cy+1, contactColour);
+          // } // if (rangeNM < 50)
+
+        } // if (aircraft)
+      } // for (each contact)
+
+    }
+
+    // Update the epaper display
+    // cs = getCycles();
+    // Takes about 1149933 us
+    EPD_2IN9_V2_Display_Partial(image_bw);
+    // ce = getCycles();
+    // printf("display partial %lu\n", getDeltaUs(cs, ce));
+
+    EPD_2IN9_V2_Sleep();
+
+    UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+    if (stackHighWaterMark == 0) {
+      printf("ERROR: stack overflow on epaper task!!\n");
+    }
+
+  }
+}
+
+/**
+ * Runs periodically to write debug to stdout and update the LCD
+ * 
+ *
+*/
+void statusTask(void *argument)
+{
+  // uint32_t cs, ce;   // For perf measurements
+  static uint32_t tLast = 0;
+  char buf[40]; // for generating strings for the displays
 
   LCD_init();
 
@@ -1082,43 +1194,11 @@ void statusTask(void *argument)
   drawBackground();
   UG_Update();
 
-  uint32_t cs, ce;
-
-  #ifdef WAVESHARE
-
-  // Clear the splash screen to minimise ghosting
-  EPD_2IN9_V2_Init();
-  EPD_2IN9_V2_Clear();
-  EPD_2IN9_V2_Sleep();
-
-  #else
-  cs = getCycles();
-  epd_init();
-  ce = getCycles();
-  printf("EPD init %lu\n", getDeltaUs(cs, ce));
-
-  cs = getCycles();
-  epd_paint_clear(EPD_COLOR_WHITE);
-  ce = getCycles();
-  printf("EPD clear %lu\n", getDeltaUs(cs, ce));
-
-  epd_paint_showString(0, 0, (uint8_t*)"Contacts ", EPD_FONT_SIZE12x6, EPD_COLOR_BLACK);
-
-  cs = getCycles();
-  epd_displayBW(image_bw);
-  ce = getCycles();
-  printf("EPD display %lu\n", getDeltaUs(cs, ce));
-
-	epd_enter_deepsleepmode(EPD_DEEPSLEEP_MODE1);
-  #endif
-
   while(true)
   {
     vTaskDelay(2000);
 
     #ifndef BEAST_OUTPUT
-
-    Paint_Clear(WHITE);
 
     const uint32_t now = HAL_GetTick();
     uint32_t diff = now - tLast;
@@ -1134,17 +1214,10 @@ void statusTask(void *argument)
       printf("\n");
     }
 
-    // printf("ms demod %lu (%lu%%)\n", msSpentByDemod, msSpentByDemod * 100 / diff);
-    // msSpentByDemod = 0;
-
-    uint32_t demodPercent = usSpentByDemod / (diff * 10);
+    demodPercent = usSpentByDemod / (diff * 10);
 
     printf("us demod %lu (%lu%%)\n", usSpentByDemod, demodPercent);
     usSpentByDemod = 0;
-
-    // Write the demod % to the bottom of the display
-    // sprintf(buf, "Demod %lu%%", demodPercent);
-    // Paint_DrawString_EN(0, EPD_2IN9_V2_WIDTH-12, buf, &Font12, BLACK, WHITE);
 
     // printf("average %u\n", globalAvg);
 
@@ -1157,9 +1230,7 @@ void statusTask(void *argument)
     UG_SetBackcolor(BackgroundColour);
 
     sprintf(buf, "%d ", nContacts);
-
     UG_PutString(0, 0, buf);
-
 
     if (nContacts > 0) {
       int nApproaching = 0;
@@ -1171,10 +1242,9 @@ void statusTask(void *argument)
       printf("Addr\t");
       #endif
       printf("Range\tBearing\tSpeed\ttrack\tBaroAlt\tGpsAlt\tMsgs\tAge\n");
-      Paint_DrawString_EN(0, 0, " Range Brng  Spd Trk Alt   Msgs Age", contactListFont, BLACK, WHITE);
+      // Paint_DrawString_EN(0, 0, " Range Brng  Spd Trk Alt   Msgs Age", contactListFont, BLACK, WHITE);
 
       int oldContactIndex = -1;
-      int epdLine = 1;
       for(int i=0; i<nContacts; i++) {
         aircraft_t *aircraft = getContact(i);
         if (aircraft) { // in case the number of entries in the list changes since we read it
@@ -1214,19 +1284,6 @@ void statusTask(void *argument)
           printf("%2.2f\t%3.1f\t%4d\t%4d\t%6u\t%6u\t%3lu\t%2lu\n", rangeNM, 
                   aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, aircraft->altitude, aircraft->messages, tSince);
 
-          // Generate a line for the EPD display
-          if (epdLine < 10 && rangeNM < 100) {
-            sprintf(buf, "%6.1f%6.1f%4d%4d%6u%4lu%4lu", rangeNM, 
-                    aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, 
-                    aircraft->messages, tSince);
-            uint16_t foreground = BLACK, background = WHITE;
-            if (closing) {
-              foreground = WHITE;
-              background = BLACK;
-            }
-            Paint_DrawString_EN(0, epdLine * contactListFont->Height, buf, contactListFont, foreground, background);
-            epdLine++;
-          }
 
           if (closing && rangeNM < minRange) {
             minRange = rangeNM;
@@ -1281,43 +1338,33 @@ void statusTask(void *argument)
         // UG_PutString(239-(4*7), 20, "    ");
         // UG_PutString(239-(3*7), 40, "   ");
       }
-    }
+    } // if (nContacts > 0)
 
     // Update the LCD
     UG_Update();
 
-    // Update the epaper display
-    // cs = getCycles();
-    // Takes about 1149933 us
-    EPD_2IN9_V2_Display_Partial(image_bw);
-    // ce = getCycles();
-    // printf("display partial %lu\n", getDeltaUs(cs, ce));
+    #endif // BEAST_OUTPUT
 
-    EPD_2IN9_V2_Sleep();
-
-
-
-    #endif
-
-    // Need the taskHandle of the main task
+    // Check for stack overflow on this task...
     UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
     if (stackHighWaterMark == 0) {
       printf("ERROR: stack overflow on status task!!\n");
     }
 
+    // ...and the demod task
     stackHighWaterMark = uxTaskGetStackHighWaterMark(demodTaskHandle);
     if (stackHighWaterMark == 0) {
       printf("ERROR: stack overflow on main task!!\n");
     }
 
-  }
+  } // while(true)
 }
 
 void processBuffer(uint16_t *input, int len)
 {
   #define BUFFERS_FOR_AVG 10
-  static uint16_t nAvgCounter = 0;
-  static uint16_t averages[BUFFERS_FOR_AVG];
+  // static uint16_t nAvgCounter = 0;
+  // static uint16_t averages[BUFFERS_FOR_AVG];
 
   // TODO - we don't really want to be calculating an average on every buffer
 
@@ -1402,12 +1449,12 @@ void processBuffer(uint16_t *input, int len)
   * @brief  Task that receives raw ADC samples and processes them to extract ADSB messages
   * @param  argument: Not used
   * @retval None
+  * 
+  * Each time the ADC has filled the (half) buffer this task will get woken by a notify event from
+  * the irq handler.
   */
 void demodTask(void *argument)
 {
-  // static uint32_t tLast = 0;
-	// uint32_t count = 0;
-
   vTaskDelay(1000);
 
   // Configure the tuner
@@ -1415,63 +1462,31 @@ void demodTask(void *argument)
 
   for(;;)
   {
-    // TODO real thread will use queue based notification
     uint32_t msg; // not used yet
-    // osStatus_t status = osMessageQueueGet(adcQueue, &msg, NULL, osWaitForever);
-    // printf("got msg, status %d\n", status);
     xTaskNotifyWait(0, 0, &msg, portMAX_DELAY);
 
-    // uint32_t tStart = HAL_GetTick();
     uint32_t cyclesStart = getCycles();
 
-    if (lowBuf) {
-      // bool oldHiBuf = hiBuf;
-
-      // Grab the data into the local array as quickly as possible - not needed if we can maintain real time
-      // memcpy(localSamples, aADCxConvertedData, ADC_CONVERTED_DATA_BUFFER_SIZE); // half the buffer, so /2, but 2 bytes per sample so *2
-
-      // if hiBuf was set while we were doing the copy then we likely have corrupted data
-      // if (hiBuf) {
-      //   printf("ERROR: HI BUF SET, old value was %d\n", oldHiBuf);
-      // }
-
-      // processBuffer(localSamples, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
+    if (lowBuf)
+    {
       processBuffer(aADCxConvertedData, ADC_CONVERTED_DATA_BUFFER_SIZE/2);
-
       lowBuf = false;
     }
 
-
-    if (hiBuf) {
-      // printf("hibuf set\n");
-
-      // bool oldLoBuf = lowBuf;
-
-      // // Grab the data into the local array as quickly as possible
-      // memcpy(localSamples, &(aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE/2]), ADC_CONVERTED_DATA_BUFFER_SIZE); // half the buffer, so /2, but 2 bytes per sample so *2
-
-      // // if loBuf was set while we were doing the copy then we likely have corrupted data
-      // if (lowBuf) {
-      //   printf("ERROR: Low BUF SET, old value was %d\n", oldLoBuf);
-      // }
-
+    if (hiBuf)
+    {
       processBuffer(&(aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE/2]), ADC_CONVERTED_DATA_BUFFER_SIZE/2);
-
       hiBuf = false;
     }
 
     uint32_t cyclesEnd = getCycles();
     usSpentByDemod += getDeltaUs(cyclesStart, cyclesEnd);
-
-    // uint32_t tEnd = HAL_GetTick();
-    // msSpentByDemod += tEnd - tStart;
-
   }
 
 }
 
-/* MPU Configuration */
-
+/* MPU Configuration 
+*/
 void MPU_Config(void)
 {
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
@@ -1529,7 +1544,7 @@ int _write(int fd, char *ptr, int len)
 
 /**
  * Read from the usb cdc
- * TODO add some debug commands to set thresholds
+ * NOT IMPLEMENTED
 */
 int _read(int fd, char *ptr, int len){
   //read from USB CDC
