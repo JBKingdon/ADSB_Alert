@@ -49,8 +49,6 @@
 #define _DEV_CONFIG_H_
 
 #include "main.h"
-// #include "stm32f1xx_hal.h"
-// #include "stm32f1xx_hal_gpio.h"
 #include <stdint.h>
 #include <stdio.h>
 
@@ -64,21 +62,6 @@
 /**
  * e-Paper GPIO
 **/
-
-
-// #define EPD_MOSI_Pin GPIO_PIN_1
-// #define EPD_MOSI_GPIO_Port GPIOC
-// #define EPD_CS_Pin GPIO_PIN_10
-// #define EPD_CS_GPIO_Port GPIOE
-// #define EPD_DC_Pin GPIO_PIN_12
-// #define EPD_DC_GPIO_Port GPIOE
-// #define EPD_BUSY_Pin GPIO_PIN_14
-// #define EPD_BUSY_GPIO_Port GPIOE
-// #define EPD_SCK_Pin GPIO_PIN_10
-// #define EPD_SCK_GPIO_Port GPIOB
-// #define EPD_RESET_Pin GPIO_PIN_11
-// #define EPD_RESET_GPIO_Port GPIOB
-
 
 #define EPD_RST_PIN     EPD_RESET_GPIO_Port, EPD_RESET_Pin
 #define EPD_DC_PIN      EPD_DC_GPIO_Port, EPD_DC_Pin

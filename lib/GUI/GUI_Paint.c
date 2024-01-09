@@ -900,8 +900,7 @@ void Paint_DrawBitMap_Paste(const unsigned char* image_buffer, UWORD xStart, UWO
 //			for (y = 0; y < Paint.HeightByte; y++) {
 //					for (x = 0; x < Paint.WidthByte; x++) {//8 pixel =  1 byte
 //							Addr = x + y * Paint.WidthByte ;
-//							Paint.Image[Addr] = \
-//							(unsigned char)image_buffer[Addr+ (Paint.HeightByte)*Paint.WidthByte];
+//							Paint.Image[Addr] = (unsigned char)image_buffer[Addr+ (Paint.HeightByte)*Paint.WidthByte];
 //					}
 //			}
 //		}
@@ -930,24 +929,21 @@ void Paint_DrawBitMap_Paste(const unsigned char* image_buffer, UWORD xStart, UWO
 //			for (y = 0; y < Paint.HeightByte; y++) {
 //					for (x = 0; x < Paint.WidthByte; x++) {//8 pixel =  1 byte
 //							Addr = x + y * Paint.WidthByte ;
-//							Paint.Image[Addr] = \
-//							(unsigned char)image_buffer[Addr+ (Paint.HeightByte)*Paint.WidthByte];
+//							Paint.Image[Addr] = (unsigned char)image_buffer[Addr+ (Paint.HeightByte)*Paint.WidthByte];
 //					}
 //			}
 //		}else if(Region == 3){
 //			for (y = 0; y < Paint.HeightByte; y++) {
 //					for (x = 0; x < Paint.WidthByte; x++) {//8 pixel =  1 byte
 //							Addr = x + y * Paint.WidthByte ;
-//							Paint.Image[Addr] = \
-//							(unsigned char)image_buffer[Addr+ (Paint.HeightByte)*Paint.WidthByte*2];
+//							Paint.Image[Addr] = (unsigned char)image_buffer[Addr+ (Paint.HeightByte)*Paint.WidthByte*2];
 //					}
 //			}
 //		}else if(Region == 4){
 //			for (y = 0; y < Paint.HeightByte; y++) {
 //					for (x = 0; x < Paint.WidthByte; x++) {//8 pixel =  1 byte
 //							Addr = x + y * Paint.WidthByte ;
-//							Paint.Image[Addr] = \
-//							(unsigned char)image_buffer[Addr+ (Paint.HeightByte)*Paint.WidthByte*3];
+//							Paint.Image[Addr] = (unsigned char)image_buffer[Addr+ (Paint.HeightByte)*Paint.WidthByte*3];
 //					}
 //			}
 //		}

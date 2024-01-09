@@ -30,9 +30,10 @@
 #
 ******************************************************************************/
 #include "DEV_Config.h"
-// #include "stm32f1xx_hal_spi.h"
 
+// Which spi to use should probably be a config
 extern SPI_HandleTypeDef hspi2;
+
 void DEV_SPI_WriteByte(UBYTE value)
 {
     HAL_SPI_Transmit(&hspi2, &value, 1, 1000);
