@@ -459,6 +459,8 @@ int decodeID13Field(int ID13Field) {
 // int decodeCPRrelative(struct aircraft *a, int fflag, int surface, double lonRel, double latRel) {
 /**
  * latCPR, lonCPR need to be doubles for the expressions in this function to operate correctly, but are integer outside of here
+ * 
+ * @return 0 for success, -1 for failure
  *
 */
 int decodeCPRrelative(aircraft_t *a, uint32_t address, int fflag, int surface, double latRel, double lonRel, double latCPR, double lonCPR) 
@@ -631,6 +633,9 @@ void decodeVelocityMessage(uint32_t address, uint8_t *msgBitstream)
             aircraft->track = ((int)(atan2(vEW, vNS) * 180 / M_PI) + 360) % 360;
 
             aircraft->messages++;
+
+            const uint32_t tNow = HAL_GetTick();
+            aircraft->timestamp = tNow;
           }
         }
         break;
@@ -832,6 +837,7 @@ void decodePositionMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type
         const float METERS_TO_FEET = 3.28084;
         altGPS = encodedAlt * METERS_TO_FEET;
         aircraft->altitude = altGPS;
+
         printf("altGPS %lu\n", altGPS);
       } else {
         printf("Unexpected type: %u\n", type);
@@ -868,13 +874,8 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
   if (crcOk)
   {
     #ifndef BEAST_OUTPUT
-    uint8_t b1 = read8Bits(bitstream, 8);
-    uint8_t b2 = read8Bits(bitstream, 16);
-    uint8_t b3 = read8Bits(bitstream, 24);
-    uint32_t address = (b1 << 16) | (b2 << 8) | b3;
 
-    uint32_t tmp = read24Bits(bitstream, 8);
-    if (tmp != address) printf("don't use read24 for address\n");
+    uint32_t address = read24Bits(bitstream, 8);
 
     // The 'type' of the message part is in 5 bits starting at offset 32
     const uint8_t type = readNBits(bitstream, 32, 5);
