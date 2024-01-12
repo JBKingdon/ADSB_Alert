@@ -156,7 +156,7 @@ SECTIONS
   .fast_data (NOLOAD) :
   {
     /* I have no idea what's needed here */
-    *(.DTCMRAM_section) 
+    *(.fast_data) 
     . = ALIGN(4);
   } >DTCMRAM
 
