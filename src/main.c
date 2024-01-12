@@ -5,8 +5,6 @@
  *    Looks like the 3v3 from the stlink doesn't have quite enough oomph, use usb power as well
 */
 
-#define WAVESHARE
-
 #include "stm32h7xx_hal.h"
 #include "cmsis_os.h"
 #include <stdio.h>
@@ -28,6 +26,9 @@
 // #include "Debug.h"        // for the ePaper library
 
 #include "perfUtil.h"
+
+// Max range in NM to show on the 'radar'
+#define MAX_PLOT_RANGE 20
 
 
 // only valid if width is a multiple of 8
@@ -806,7 +807,7 @@ int filteredAmplitudeToBitStream(uint16_t *input, int len, int start)
 }
 
 const uint32_t PlotRadius = 115;
-const UG_U16 BackgroundColour = C_DIM_GRAY;
+const UG_U16 BackgroundColour = C_BLACK;
 
 void drawBackground()
 {
@@ -1134,8 +1135,8 @@ void epaperTask(void *argument)
 
           // Radar plot - old code for the LCD, might be useful later
           // if (rangeNM < 50) {
-          //   // scale range to the size of the circle for a max 30NM display
-          //   uint32_t radius = rangeNM * PlotRadius / 30;
+          //   // scale range to the size of the circle for a MAX_PLOT_RANGE NM display
+          //   uint32_t radius = rangeNM * PlotRadius / MAX_PLOT_RANGE;
           //   // and limit so that distant contacts are drawn at the edge
           //   if (radius > PlotRadius) radius = PlotRadius;
           //   uint16_t cx = 120 + (int)(radius * sin((aircraft->bearing+180)*M_PI/180));
@@ -1242,7 +1243,6 @@ void statusTask(void *argument)
       printf("Addr\t");
       #endif
       printf("Range\tBearing\tSpeed\ttrack\tBaroAlt\tGpsAlt\tMsgs\tAge\n");
-      // Paint_DrawString_EN(0, 0, " Range Brng  Spd Trk Alt   Msgs Age", contactListFont, BLACK, WHITE);
 
       int oldContactIndex = -1;
       for(int i=0; i<nContacts; i++) {
@@ -1274,7 +1274,7 @@ void statusTask(void *argument)
           }
 
           const uint32_t tLocal = aircraft->timestamp; // privatise to avoid race condition
-          const uint32_t tNow = HAL_GetTick();
+          uint32_t tNow = HAL_GetTick();
           uint32_t tSince = (tNow - tLocal)/1000;
           printf("%2d: %c ", i, closing ? 'C' : ' ');
           #ifdef SHOW_ADDR
@@ -1291,8 +1291,8 @@ void statusTask(void *argument)
           }
 
           if (rangeNM < 50) {
-            // scale range to the size of the circle for a max 30NM display
-            uint32_t radius = rangeNM * PlotRadius / 30;
+            // scale range to the size of the circle for the display (MAX_PLOT_RANGE in NM)
+            uint32_t radius = rangeNM * PlotRadius / MAX_PLOT_RANGE;
             // and limit so that distant contacts are drawn at the edge
             if (radius > PlotRadius) radius = PlotRadius;
             uint16_t cx = 120 + (int)(radius * sin((aircraft->bearing+180)*M_PI/180));
@@ -1300,8 +1300,33 @@ void statusTask(void *argument)
             // printf("drawing at %u %u\n", cx, cy);
             UG_COLOR contactColour = C_GREEN;
             if (closing) contactColour = C_RED;
-            // UG_DrawPixel(cx, cy, contactColour);
-            UG_FillFrame(cx-1, cy-1, cx+1, cy+1, contactColour);
+
+            // Draw a dot to show the position of the aircraft
+            const uint32_t MarkSize = 2;
+            UG_FillFrame(cx-MarkSize, cy-MarkSize, cx+MarkSize, cy+MarkSize, contactColour);
+
+            // Draw a line representing the velocity vector of the aircraft
+            // TODO figure out what to do when the line goes outside the drawing area
+            const uint32_t speed = aircraft->speed * PlotRadius / (MAX_PLOT_RANGE * 60);  // 60s distance in pixels
+            const float bearing = aircraft->track;
+            const float bearingRad = bearing * M_PI / 180;
+            const int32_t x = cx + (int)(speed * sinf(bearingRad));
+            const int32_t y = cy - (int)(speed * cosf(bearingRad));
+            UG_DrawLine(cx, cy, x, y, contactColour);
+
+            // Draw a dot to show the estimated position along the track if the age is older than 10s
+            // XXX This needs to use the age of the last position update
+            const uint32_t tPosition = aircraft->timestampLatLon;
+            tNow = HAL_GetTick();
+            const uint32_t tSincePosition = (tNow - tPosition)/1000;
+            if (tSincePosition > 10) {
+              const uint32_t estDistance = speed * tSincePosition / 60; // scale the original 60s velocity vector by tSincePosition
+
+              const int32_t xEst = cx + (int)(estDistance * sinf(bearingRad));
+              const int32_t yEst = cy - (int)(estDistance * cosf(bearingRad));
+              UG_FillFrame(xEst-1, yEst-1, xEst+1, yEst+1, C_WHITE);
+            }
+
           } // if (rangeNM < 50)
         } // if (aircraft)
       } // for (each contact)
