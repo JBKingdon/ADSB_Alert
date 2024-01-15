@@ -25,6 +25,8 @@
 // #include "ImageData.h" // for the ePaper test code
 // #include "Debug.h"        // for the ePaper library
 
+#include "lcdST7796.h"
+
 #include "perfUtil.h"
 
 // Max range in NM to show on the 'radar'
@@ -37,7 +39,6 @@
 #endif
 __attribute__((section(".fast_data")))
 uint8_t image_bw[EPD_2IN9_V2_WIDTH / 8 * EPD_2IN9_V2_HEIGHT];
-
 
 // #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  4096)   /* number of entries of array aADCxConvertedData[] */
 #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  16384)   /* number of entries of array aADCxConvertedData[] */
@@ -58,8 +59,10 @@ extern USBD_HandleTypeDef hUsbDeviceHS;
 I2C_HandleTypeDef hi2c1;
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
-SPI_HandleTypeDef hspi1;
-SPI_HandleTypeDef hspi2;
+SPI_HandleTypeDef hspi1;    // 1" lcd
+SPI_HandleTypeDef hspi2;    // epaper
+SPI_HandleTypeDef hspi3;    // 3.5" lcd
+DMA_HandleTypeDef hdma_spi3_tx;
 
 
 TIM_HandleTypeDef htim7;  // not used yet
@@ -96,6 +99,7 @@ static void MX_TIM7_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_SPI2_Init(void);
+static void MX_SPI3_Init(void);
 
 void demodTask(void *argument);
 void statusTask(void *argument);
@@ -145,6 +149,7 @@ int main(void)
   MX_I2C1_Init();
   MX_SPI1_Init();
   MX_SPI2_Init();
+  MX_SPI3_Init();
 
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
@@ -172,6 +177,29 @@ int main(void)
   /* Infinite loop */
 
   while (1) {}
+}
+
+/**
+ * WARNING - assumes all three pins share the same port
+*/
+void lcd2_gpio_init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+
+  /*Configure GPIO pin default states */
+  HAL_GPIO_WritePin(LCD2_RESET_GPIO_Port, LCD2_RESET_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LCD2_DC_GPIO_Port, LCD2_DC_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LCD2_CS_GPIO_Port, LCD2_CS_Pin, GPIO_PIN_SET);
+
+  // Configure GPIO pins : LCD2_RESET_Pin LCD2_DC_Pin LCD2_CS_Pin 
+  GPIO_InitStruct.Pin = LCD2_RESET_Pin|LCD2_DC_Pin|LCD2_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LCD2_CS_GPIO_Port, &GPIO_InitStruct);
+
 }
 
 void epd_io_init(void)
@@ -522,19 +550,56 @@ static void MX_SPI2_Init(void)
 }
 
 /**
+  * @brief SPI3 init for 3.5" LCD
+  * @param None
+  * @retval None
+  */
+static void MX_SPI3_Init(void)
+{
+  /* SPI3 parameter configuration*/
+  hspi3.Instance = SPI3;
+  hspi3.Init.Mode = SPI_MODE_MASTER;
+  hspi3.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi3.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi3.Init.CLKPolarity = SPI_POLARITY_HIGH;
+  hspi3.Init.CLKPhase = SPI_PHASE_2EDGE;
+  hspi3.Init.NSS = SPI_NSS_SOFT;
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+  hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi3.Init.CRCPolynomial = 0x0;
+  hspi3.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+  hspi3.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
+  hspi3.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
+  hspi3.Init.TxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
+  hspi3.Init.RxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
+  hspi3.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
+  hspi3.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
+  hspi3.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
+  hspi3.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;
+  hspi3.Init.IOSwap = SPI_IO_SWAP_DISABLE;
+  if (HAL_SPI_Init(&hspi3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
   * Enable DMA controller clock
   */
 static void MX_DMA_Init(void)
 {
-
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
 
-  /* DMA interrupt init */
-  /* DMA1_Stream0_IRQn interrupt configuration */
+  /* DMA1_Stream0_IRQn interrupt configuration, for ADC buffer */
   HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
 
+  /* DMA1_Stream1_IRQn interrupt configuration, for SPI3 transfers */
+  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 }
 
 /**
@@ -545,10 +610,11 @@ static void MX_DMA_Init(void)
 static void MX_GPIO_Init(void)
 {
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
 
   LED_Init();
 
@@ -563,7 +629,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
 
 }
 
@@ -1177,15 +1242,15 @@ void epaperTask(void *argument)
 */
 void statusTask(void *argument)
 {
-  // uint32_t cs, ce;   // For perf measurements
+  uint32_t cs, ce;  // For perf measurements
   static uint32_t tLast = 0;
   char buf[40]; // for generating strings for the displays
 
-  LCD_init();
+  ST77xx_LCD_init();
 
-  LCD_Fill(0, 0, 239, 239, C_DARK_BLUE);
-  LCD_PutStr(10, 80, "ADSB ALERT", FONT_24X40, C_WHITE, C_DARK_BLUE);
-  LCD_PutStr(20, 120, "V0.0 (alpha)", FONT_16X26, C_WHITE, C_DARK_BLUE);
+  ST77xx_LCD_Fill(0, 0, 239, 239, C_DARK_BLUE);
+  ST77xx_LCD_PutStr(10, 80, "ADSB ALERT", FONT_24X40, C_WHITE, C_DARK_BLUE);
+  ST77xx_LCD_PutStr(20, 120, "V0.0 (alpha)", FONT_16X26, C_WHITE, C_DARK_BLUE);
   UG_Update();
 
   vTaskDelay(1000);
@@ -1194,6 +1259,16 @@ void statusTask(void *argument)
 
   drawBackground();
   UG_Update();
+
+  lcd2_gpio_init();
+  LCD_Init();
+
+  vTaskDelay(1000);
+  cs = getCycles();
+  LCD_Clear(YELLOW);
+  ce = getCycles();
+
+  printf("LCD clear %lu\n", getDeltaUs(cs, ce));
 
   while(true)
   {
@@ -1367,6 +1442,12 @@ void statusTask(void *argument)
 
     // Update the LCD
     UG_Update();
+
+    uint16_t * smallFB = ST77xx_LCD_GetFB();
+
+    // Copy the small lcd frame to the big lcd
+    LCD_WriteWindow(0, 0, 239, 239, smallFB);
+
 
     #endif // BEAST_OUTPUT
 
@@ -1694,3 +1775,12 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
     }
   }
 }
+
+bool spiTransmitInProgress = false;
+
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  // Need a global bool or enum to track the SPI transmit state
+  spiTransmitInProgress = false;
+}
+

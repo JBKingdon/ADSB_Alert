@@ -59,6 +59,10 @@ extern PCD_HandleTypeDef hpcd_USB_OTG_HS;
 extern DMA_HandleTypeDef hdma_adc1;
 extern ADC_HandleTypeDef hadc1;
 extern TIM_HandleTypeDef htim6;
+extern SPI_HandleTypeDef hspi3;
+extern DMA_HandleTypeDef hdma_spi3_tx;
+
+
 
 /* USER CODE BEGIN EV */
 
@@ -167,19 +171,12 @@ void DebugMon_Handler(void)
   */
 void DMA1_Stream0_IRQHandler(void)
 {
-  /* USER CODE BEGIN DMA1_Stream0_IRQn 0 */
-
-  /* USER CODE END DMA1_Stream0_IRQn 0 */
   HAL_DMA_IRQHandler(&hdma_adc1);
-  /* USER CODE BEGIN DMA1_Stream0_IRQn 1 */
-
-  /* USER CODE END DMA1_Stream0_IRQn 1 */
 }
 
-// XXX which stream are we supposed to be using?
 void DMA1_Stream1_IRQHandler(void)
 {
-  HAL_DMA_IRQHandler(&hdma_adc1);
+  HAL_DMA_IRQHandler(&hdma_spi3_tx);
 }
 
 
@@ -196,6 +193,21 @@ void ADC_IRQHandler(void)
 
   /* USER CODE END ADC_IRQn 1 */
 }
+
+/**
+  * @brief This function handles SPI3 global interrupt.
+  */
+void SPI3_IRQHandler(void)
+{
+  HAL_SPI_IRQHandler(&hspi3);
+}
+
+// Pulled from an example, doesn't appear in the cubeMX project, didn't help
+// void SPIx_DMA_TX_IRQHandler(void)
+// {
+//   HAL_DMA_IRQHandler(hspi3.hdmatx);
+// }
+
 
 /**
   * @brief This function handles TIM6 global interrupt, DAC1_CH1 and DAC1_CH2 underrun error interrupts.

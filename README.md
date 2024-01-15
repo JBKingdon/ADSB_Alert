@@ -26,3 +26,4 @@ while I'm getting my act together:
 - Algorithms for handling coordinates from https://www.movable-type.co.uk/scripts/latlong.html
 - Excellent ADSB documentation from https://mode-s.org/decode/index.html
 - E-paper driver and graphics library from https://github.com/waveshareteam/e-Paper
+- ST7796 Driver from http://www.lcdwiki.com/3.5inch_IPS_SPI_Module_ST7796

@@ -51,7 +51,10 @@ const uint8_t init_cmd[] = {
 #endif
 
 
-static void LCD_Update(void);
+static void ST77xx_LCD_Update(void);
+
+// config is used for dma support (not currently implemented)
+
 typedef struct{
   int8_t spi_sz;
   int8_t dma_sz;
@@ -65,7 +68,8 @@ config_t config = {
 };
 
 #ifdef LCD_LOCAL_FB
-__attribute__((section(".fast_data"))) static uint16_t fb[LCD_WIDTH*LCD_HEIGHT];
+// __attribute__((section(".fast_data"))) uint16_t fb[LCD_WIDTH*LCD_HEIGHT];
+ALIGN_32BYTES (uint16_t fb[LCD_WIDTH*LCD_HEIGHT]);
 #endif
 
 static UG_GUI gui;
@@ -73,11 +77,11 @@ static UG_DEVICE device = {
     .x_dim = LCD_WIDTH,
     .y_dim = LCD_HEIGHT,
 #ifdef LCD_LOCAL_FB
-    .pset = LCD_DrawPixelFB,
+    .pset = ST77xx_LCD_DrawPixelFB,
 #else
-    .pset = LCD_DrawPixel,
+    .pset = ST77xx_LCD_DrawPixel,
 #endif
-    .flush = LCD_Update,
+    .flush = ST77xx_LCD_Update,
 };
 
 #define mode_16bit    1
@@ -187,7 +191,7 @@ static void setDMAMemMode(uint8_t memInc, uint8_t size)
  * @param cmd -> command to write
  * @return none
  */
-static void LCD_WriteCommand(uint8_t *cmd, uint8_t argc)
+static void ST77xx_LCD_WriteCommand(uint8_t *cmd, uint8_t argc)
 {
   setSPI_Size(mode_8bit);
   LCD_PIN(LCD_DC,RESET);
@@ -210,18 +214,18 @@ static void LCD_WriteCommand(uint8_t *cmd, uint8_t argc)
  * @param buff_size -> size of the data buffer
  * @return none
  */
-static void LCD_WriteData(uint8_t *buff, size_t buff_size)
+static void ST77xx_LCD_WriteData(uint8_t *buff, size_t buff_size)
 {
   LCD_PIN(LCD_DC,SET);
-#ifdef LCD_CS
+  #ifdef LCD_CS
   LCD_PIN(LCD_CS,RESET);
-#endif
+  #endif
 
   // split data in small chunks because HAL can't send more than 64K at once
 
   while (buff_size > 0) {
     uint16_t chunk_size = buff_size > 65535 ? 65535 : buff_size;
-#ifdef USE_DMA
+    #ifdef USE_DMA
     if(buff_size>DMA_Min_Pixels){
       HAL_SPI_Transmit_DMA(&LCD_HANDLE, buff, chunk_size);
       while(HAL_DMA_GetState(LCD_HANDLE.hdmatx)!=HAL_DMA_STATE_READY);
@@ -239,14 +243,15 @@ static void LCD_WriteData(uint8_t *buff, size_t buff_size)
       else
         buff += chunk_size*2;
     }
-#else
+    #else
     HAL_SPI_Transmit(&LCD_HANDLE, buff, chunk_size, HAL_MAX_DELAY);
-#endif
+    #endif
     buff_size -= chunk_size;
   }
-#ifdef LCD_CS
+
+  #ifdef LCD_CS
   LCD_PIN(LCD_CS,SET);
-#endif
+  #endif
 }
 
 /**
@@ -255,7 +260,7 @@ static void LCD_WriteData(uint8_t *buff, size_t buff_size)
  * @return none
  */
 
-static void LCD_ReadCmd(uint8_t cmd, uint8_t *data, uint8_t count)
+static void ST77xx_LCD_ReadCmd(uint8_t cmd, uint8_t *data, uint8_t count)
 {
   setSPI_Size(mode_8bit);
   #ifdef LCD_CS
@@ -275,7 +280,7 @@ static void LCD_ReadCmd(uint8_t cmd, uint8_t *data, uint8_t count)
  * @param m -> rotation parameter(please refer it in ST7735.h)
  * @return none
  */
-void LCD_SetRotation(uint8_t m)
+void ST77xx_LCD_SetRotation(uint8_t m)
 {
   uint8_t cmd[] = { CMD_MADCTL, 0};
 
@@ -312,7 +317,7 @@ void LCD_SetRotation(uint8_t m)
 #endif
     break;
   }
-  LCD_WriteCommand(cmd, sizeof(cmd)-1);
+  ST77xx_LCD_WriteCommand(cmd, sizeof(cmd)-1);
 }
 
 
@@ -321,7 +326,7 @@ void LCD_SetRotation(uint8_t m)
  * @param xi&yi -> coordinates of window
  * @return none
  */
-static void LCD_SetAddressWindow(int16_t x0, int16_t y0, int16_t x1, int16_t y1)
+static void ST77xx_LCD_SetAddressWindow(int16_t x0, int16_t y0, int16_t x1, int16_t y1)
 {
   int16_t x_start = x0 + LCD_X_SHIFT, x_end = x1 + LCD_X_SHIFT;
   int16_t y_start = y0 + LCD_Y_SHIFT, y_end = y1 + LCD_Y_SHIFT;
@@ -329,17 +334,17 @@ static void LCD_SetAddressWindow(int16_t x0, int16_t y0, int16_t x1, int16_t y1)
   /* Column Address set */
   {
     uint8_t cmd[] = { CMD_CASET, x_start >> 8, x_start & 0xFF, x_end >> 8, x_end & 0xFF };
-    LCD_WriteCommand(cmd, sizeof(cmd)-1);
+    ST77xx_LCD_WriteCommand(cmd, sizeof(cmd)-1);
   }
   /* Row Address set */
   {
     uint8_t cmd[] = { CMD_RASET, y_start >> 8, y_start & 0xFF, y_end >> 8, y_end & 0xFF };
-    LCD_WriteCommand(cmd, sizeof(cmd)-1);
+    ST77xx_LCD_WriteCommand(cmd, sizeof(cmd)-1);
   }
   {
   /* Write to RAM */
     uint8_t cmd[] = { CMD_RAMWR };
-    LCD_WriteCommand(cmd, sizeof(cmd)-1);
+    ST77xx_LCD_WriteCommand(cmd, sizeof(cmd)-1);
   }
 }
 
@@ -350,7 +355,7 @@ static void LCD_SetAddressWindow(int16_t x0, int16_t y0, int16_t x1, int16_t y1)
  * @param color -> color of the Pixel
  * @return none
  */
-void LCD_DrawPixel(int16_t x, int16_t y, uint16_t color)
+void ST77xx_LCD_DrawPixel(int16_t x, int16_t y, uint16_t color)
 {
   if ((x < 0) || (x > LCD_WIDTH-1) ||
      (y < 0) || (y > LCD_HEIGHT-1))
@@ -358,7 +363,7 @@ void LCD_DrawPixel(int16_t x, int16_t y, uint16_t color)
 
   uint8_t data[2] = {color >> 8, color & 0xFF};
 
-  LCD_SetAddressWindow(x, y, x, y);
+  ST77xx_LCD_SetAddressWindow(x, y, x, y);
 
   LCD_PIN(LCD_DC,SET);
 #ifdef LCD_CS
@@ -371,16 +376,22 @@ void LCD_DrawPixel(int16_t x, int16_t y, uint16_t color)
 }
 
 #ifdef LCD_LOCAL_FB
-void LCD_DrawPixelFB(int16_t x, int16_t y, uint16_t color)
+void ST77xx_LCD_DrawPixelFB(int16_t x, int16_t y, uint16_t color)
 {
   if ((x < 0) || (x >= LCD_WIDTH) ||
      (y < 0) || (y >= LCD_HEIGHT)) return;
 
   fb[x+(y*LCD_WIDTH)] = color;
 }
+
+uint16_t * ST77xx_LCD_GetFB(void)
+{
+  return fb;
+}
+
 #endif
 
-void LCD_FillPixels(uint32_t pixels, uint16_t color){
+void ST77xx_LCD_FillPixels(uint32_t pixels, uint16_t color){
 #ifdef USE_DMA
   if(pixels>DMA_Min_Pixels)
     LCD_WriteData((uint8_t*)&color, pixels);
@@ -392,7 +403,7 @@ void LCD_FillPixels(uint32_t pixels, uint16_t color){
     }
     while(pixels){                                                                                // Send 64 pixel blocks
       uint32_t sz = (pixels<DMA_Min_Pixels ? pixels : DMA_Min_Pixels);
-      LCD_WriteData((uint8_t*)fill, sz);
+      ST77xx_LCD_WriteData((uint8_t*)fill, sz);
       pixels-=sz;
     }
 #ifdef USE_DMA
@@ -405,7 +416,7 @@ void LCD_FillPixels(uint32_t pixels, uint16_t color){
  * @param xi&yi -> coordinates of window
  * @return none
  */
-void(*LCD_FillArea(int16_t x0, int16_t y0, int16_t x1, int16_t y1))(uint32_t, uint16_t){
+void(*ST77xx_LCD_FillArea(int16_t x0, int16_t y0, int16_t x1, int16_t y1))(uint32_t, uint16_t){
   if(x0==-1){
 #ifdef USE_DMA
     setDMAMemMode(mem_increase, mode_8bit);
@@ -414,14 +425,14 @@ void(*LCD_FillArea(int16_t x0, int16_t y0, int16_t x1, int16_t y1))(uint32_t, ui
 #endif
     return NULL;
   }
-  LCD_SetAddressWindow(x0,y0,x1,y1);
+  ST77xx_LCD_SetAddressWindow(x0,y0,x1,y1);
 #ifdef USE_DMA
     setDMAMemMode(mem_fixed, mode_16bit);
 #else
     setSPI_Size(mode_16bit);                                                          // Set SPI to 16 bit
 #endif
   LCD_PIN(LCD_DC,SET);
-  return LCD_FillPixels;
+  return ST77xx_LCD_FillPixels;
 }
 
 
@@ -432,16 +443,16 @@ void(*LCD_FillArea(int16_t x0, int16_t y0, int16_t x1, int16_t y1))(uint32_t, ui
  * @param color -> color to Fill with
  * @return none
  */
-int8_t LCD_Fill(uint16_t xSta, uint16_t ySta, uint16_t xEnd, uint16_t yEnd, uint16_t color)
+int8_t ST77xx_LCD_Fill(uint16_t xSta, uint16_t ySta, uint16_t xEnd, uint16_t yEnd, uint16_t color)
 {
   uint32_t pixels = (uint32_t)(xEnd-xSta+1)*(yEnd-ySta+1);
-  LCD_SetAddressWindow(xSta, ySta, xEnd, yEnd);
+  ST77xx_LCD_SetAddressWindow(xSta, ySta, xEnd, yEnd);
 #ifdef USE_DMA
     setDMAMemMode(mem_fixed, mode_16bit);
 #else
     setSPI_Size(mode_16bit);
 #endif
-  LCD_FillPixels(pixels, color);
+  ST77xx_LCD_FillPixels(pixels, color);
 #ifdef USE_DMA
   setDMAMemMode(mem_increase, mode_8bit);
 #else
@@ -458,7 +469,7 @@ int8_t LCD_Fill(uint16_t xSta, uint16_t ySta, uint16_t xEnd, uint16_t yEnd, uint
  * @param data -> pointer of the Image array
  * @return none
  */
-void LCD_DrawImage(uint16_t x, uint16_t y, UG_BMP* bmp)
+void ST77xx_LCD_DrawImage(uint16_t x, uint16_t y, UG_BMP* bmp)
 {
   uint16_t w = bmp->width;
   uint16_t h = bmp->height;
@@ -470,19 +481,19 @@ void LCD_DrawImage(uint16_t x, uint16_t y, UG_BMP* bmp)
     return;
   if(bmp->bpp!=BMP_BPP_16)
     return;
-  LCD_SetAddressWindow(x, y, x + w - 1, y + h - 1);
+  ST77xx_LCD_SetAddressWindow(x, y, x + w - 1, y + h - 1);
 
   #ifdef USE_DMA
   setDMAMemMode(mem_increase, mode_16bit);                                                            // Set SPI and DMA to 16 bit, enable memory increase
   #else
   setSPI_Size(mode_16bit);                                                                            // Set SPI to 16 bit
   #endif
-  LCD_WriteData((uint8_t*)bmp->p, w*h);
-#ifdef USE_DMA
-setDMAMemMode(mem_increase, mode_8bit);                                                            // Set SPI and DMA to 16 bit, enable memory increase
-#else
-setSPI_Size(mode_8bit);                                                                            // Set SPI to 16 bit
-#endif
+  ST77xx_LCD_WriteData((uint8_t*)bmp->p, w*h);
+  #ifdef USE_DMA
+  setDMAMemMode(mem_increase, mode_8bit);                                                            // Set SPI and DMA to 16 bit, enable memory increase
+  #else
+  setSPI_Size(mode_8bit);                                                                            // Set SPI to 16 bit
+  #endif
   }
 
 /**
@@ -492,7 +503,7 @@ setSPI_Size(mode_8bit);                                                         
  * @param color -> color of the line to Draw
  * @return none
  */
-int8_t LCD_DrawLine(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color) {
+int8_t ST77xx_LCD_DrawLine(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color) {
 
   if(x0==x1){                                   // If horizontal
     if(y0>y1) swap(y0,y1);
@@ -504,29 +515,30 @@ int8_t LCD_DrawLine(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t
     return UG_RESULT_FAIL;
   }
 
-  LCD_Fill(x0,y0,x1,y1,color);               // Draw using acceleration
+  ST77xx_LCD_Fill(x0,y0,x1,y1,color);               // Draw using acceleration
   return UG_RESULT_OK;
 }
-void LCD_PutChar(uint16_t x, uint16_t y, char ch, UG_FONT* font, uint16_t color, uint16_t bgcolor){
+void ST77xx_LCD_PutChar(uint16_t x, uint16_t y, char ch, UG_FONT* font, uint16_t color, uint16_t bgcolor){
   UG_FontSelect(font);
   UG_PutChar(ch, x, y, color, bgcolor);
 }
 
-void LCD_PutStr(uint16_t x, uint16_t y,  char *str, UG_FONT* font, uint16_t color, uint16_t bgcolor){
+void ST77xx_LCD_PutStr(uint16_t x, uint16_t y,  char *str, UG_FONT* font, uint16_t color, uint16_t bgcolor){
   UG_FontSelect(font);
   UG_SetForecolor(color);
   UG_SetBackcolor(bgcolor);
   UG_PutString(x, y, str);
 }
+
 /**
  * @brief Invert Fullscreen color
  * @param invert -> Whether to invert
  * @return none
  */
-void LCD_InvertColors(uint8_t invert)
+void ST77xx_LCD_InvertColors(uint8_t invert)
 {
   uint8_t cmd[] = { (invert ? CMD_INVON /* INVON */ : CMD_INVOFF /* INVOFF */) };
-  LCD_WriteCommand(cmd, sizeof(cmd)-1);
+  ST77xx_LCD_WriteCommand(cmd, sizeof(cmd)-1);
 }
 
 /*
@@ -534,43 +546,43 @@ void LCD_InvertColors(uint8_t invert)
  * @param tear -> Whether to tear
  * @return none
  */
-void LCD_TearEffect(uint8_t tear)
+void ST77xx_LCD_TearEffect(uint8_t tear)
 {
   uint8_t cmd[] = { (tear ? 0x35 /* TEON */ : 0x34 /* TEOFF */) };
-  LCD_WriteCommand(cmd, sizeof(cmd)-1);
+  ST77xx_LCD_WriteCommand(cmd, sizeof(cmd)-1);
 }
 
-void LCD_setPower(uint8_t power)
+void ST77xx_LCD_setPower(uint8_t power)
 {
   uint8_t cmd[] = { (power ? CMD_DISPON /* TEON */ : CMD_DISPOFF /* TEOFF */) };
-  LCD_WriteCommand(cmd, sizeof(cmd)-1);
+  ST77xx_LCD_WriteCommand(cmd, sizeof(cmd)-1);
 }
 
-static void LCD_Update(void)
+static void ST77xx_LCD_Update(void)
 {
 #ifdef LCD_LOCAL_FB
   setSPI_Size(mode_8bit);
-  LCD_SetAddressWindow(0,0,LCD_WIDTH-1,LCD_HEIGHT-1);
+  ST77xx_LCD_SetAddressWindow(0,0,LCD_WIDTH-1,LCD_HEIGHT-1);
   #ifdef USE_DMA
-  setDMAMemMode(mem_increase, mode_16bit);                                                            // Set SPI and DMA to 16 bit, enable memory increase
+  setDMAMemMode(mem_increase, mode_16bit);            // Set SPI and DMA to 16 bit, enable memory increase
   #else
-  setSPI_Size(mode_16bit);                                                                            // Set SPI to 16 bit
+  setSPI_Size(mode_16bit);                            // Set SPI to 16 bit
   #endif
-  LCD_WriteData((uint8_t*)fb, LCD_WIDTH*LCD_HEIGHT);
+  ST77xx_LCD_WriteData((uint8_t*)fb, LCD_WIDTH*LCD_HEIGHT);
 #endif
   #ifdef USE_DMA
-  setDMAMemMode(mem_increase, mode_8bit);                                                            // Set SPI and DMA to 16 bit, enable memory increase
+  setDMAMemMode(mem_increase, mode_8bit);             // Set SPI and DMA to 16 bit, enable memory increase
   #else
-  setSPI_Size(mode_8bit);                                                                            // Set SPI to 16 bit
+  setSPI_Size(mode_8bit);                             // Set SPI to 16 bit
   #endif
 }
+
 /**
  * @brief Initialize ST7735 controller
  * @param none
  * @return none
  */
-
-void LCD_init(void)
+void ST77xx_LCD_init(void)
 {
 #ifdef LCD_CS
   LCD_PIN(LCD_CS,SET);
@@ -591,10 +603,10 @@ void LCD_init(void)
   UG_FontSetHSpace(0);
   UG_FontSetVSpace(0);
   for(uint16_t i=0; i<sizeof(init_cmd); ){
-    LCD_WriteCommand((uint8_t*)&init_cmd[i+1], init_cmd[i]);
+    ST77xx_LCD_WriteCommand((uint8_t*)&init_cmd[i+1], init_cmd[i]);
     i += init_cmd[i]+2;
   }
   UG_FillScreen(C_BLACK);               //  Clear screen
-  LCD_setPower(ENABLE);
+  ST77xx_LCD_setPower(ENABLE);
   UG_Update();
 }
