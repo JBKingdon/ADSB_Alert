@@ -110,6 +110,8 @@ extern u16  BACK_COLOR;
 #define	LCD_RS_CLR	HAL_GPIO_WritePin(LCD2_DC_GPIO_Port, LCD2_DC_Pin, GPIO_PIN_RESET);
 #define	LCD_RST_CLR	HAL_GPIO_WritePin(LCD2_RESET_GPIO_Port, LCD2_RESET_Pin, GPIO_PIN_RESET);
 
+// XXX get rid of these colour defs and use the UG ones instead?
+
 #define D_WHITE       0xFFFF
 // #define BLACK      	0x0000	  
 #define BLUE       	0x001F  
@@ -134,14 +136,15 @@ extern u16  BACK_COLOR;
 #define LBBLUE      0X2B12
 	    															  
 void LCD_Init(void);
-void LCD_DisplayOn(void);
-void LCD_DisplayOff(void);
+// void LCD_DisplayOn(void);
+// void LCD_DisplayOff(void);
 void LCD_Clear(u16 Color);	 
 void LCD_SetCursor(u16 Xpos, u16 Ypos);
 void LCD_DrawPoint(u16 x,u16 y);
+void LCD_DrawPixel(int16_t x, int16_t y, uint16_t color);
 u16  LCD_ReadPoint(u16 x,u16 y);
-void LCD_DrawLine(u16 x1, u16 y1, u16 x2, u16 y2);
-void LCD_DrawRectangle(u16 x1, u16 y1, u16 x2, u16 y2);		   
+// void LCD_DrawLine(u16 x1, u16 y1, u16 x2, u16 y2);
+// void LCD_DrawRectangle(u16 x1, u16 y1, u16 x2, u16 y2);		   
 void LCD_SetWindows(u16 xStar, u16 yStar,u16 xEnd,u16 yEnd);
 void LCD_WriteWindow(u16 x1, u16 y1, u16 x2, u16 y2, u16 *buf);
 

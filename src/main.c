@@ -1235,6 +1235,8 @@ void epaperTask(void *argument)
   }
 }
 
+void nop(void) {}
+
 /**
  * Runs periodically to write debug to stdout and update the LCD
  * 
@@ -1247,6 +1249,8 @@ void statusTask(void *argument)
   char buf[40]; // for generating strings for the displays
 
   ST77xx_LCD_init();
+
+  UG_GUI *guiLCD1p = UG_GetGUI();
 
   ST77xx_LCD_Fill(0, 0, 239, 239, C_DARK_BLUE);
   ST77xx_LCD_PutStr(10, 80, "ADSB ALERT", FONT_24X40, C_WHITE, C_DARK_BLUE);
@@ -1262,13 +1266,38 @@ void statusTask(void *argument)
 
   lcd2_gpio_init();
   LCD_Init();
+  LCD_direction(1);
 
-  vTaskDelay(1000);
+
+  UG_DEVICE deviceLCD2 = {
+    .x_dim = LCD_W,
+    .y_dim = LCD_H,
+    .pset = LCD_DrawPixel,
+    .flush = nop,
+  };
+
+  LCD_Clear(C_RED);
+  LCD_Clear(C_GREEN);
+  LCD_Clear(C_BLUE);
+  
   cs = getCycles();
-  LCD_Clear(YELLOW);
+  LCD_Clear(BLACK);
   ce = getCycles();
 
   printf("LCD clear %lu\n", getDeltaUs(cs, ce));
+
+  UG_GUI guiLCD2;
+
+  memset(&guiLCD2, 0, sizeof(guiLCD2));
+
+  UG_Init(&guiLCD2, &deviceLCD2);
+  UG_FontSelect(FONT_7X12);
+  UG_SetBackcolor(BackgroundColour);
+  UG_SetForecolor(C_WHITE);
+  UG_PutString(0, 0, "HELLO WORLD!");
+  UG_SelectGUI(guiLCD1p);
+
+  vTaskDelay(1000);
 
   while(true)
   {

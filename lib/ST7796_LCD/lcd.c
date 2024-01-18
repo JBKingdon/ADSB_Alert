@@ -31,6 +31,7 @@
 // #include "spi.h"
 #include "cmsis_os.h"
 #include <stdbool.h>
+#include <stdio.h>
 
 extern bool spiTransmitInProgress;
 
@@ -193,6 +194,18 @@ void LCD_DrawPoint(u16 x, u16 y)
 	Lcd_WriteData_16Bit(POINT_COLOR);
 }
 
+/**
+ * Set a pixel to the given colour
+ * 
+ * Added for UG integration
+*/
+void LCD_DrawPixel(int16_t x, int16_t y, uint16_t colour)
+{
+	LCD_SetCursor(x, y);
+	Lcd_WriteData_16Bit(colour);
+}
+
+
 u16 LCD_ReadPoint(u16 x, u16 y)
 {
 	u16 color;
@@ -201,6 +214,12 @@ u16 LCD_ReadPoint(u16 x, u16 y)
 	return color;
 }
 
+/**
+ * Enable or disable the memory increment on the dma stream.
+ * 
+ * Allows filling with a solid colour without needing a large
+ * source buffer.
+*/
 void setDMAmemInc(const bool inc)
 {
 	DMA_HandleTypeDef *hdma = hspi3.hdmatx;
@@ -217,8 +236,40 @@ void setDMAmemInc(const bool inc)
 	((DMA_Stream_TypeDef *)hdma->Instance)->CR = registerValue;
 }
 
+/*
+ * @brief Sets SPI interface transfer size (0=8bit, 1=16 bit)
+ * @param size 0=8bit, 1=16 bit
+ * @return none
+ */
+static void SPI_SetSize(uint8_t size)
+{
+	static uint8_t spiSize = 0; // Persistent across calls
 
-ALIGN_32BYTES (uint16_t lineBuffer[320]);
+	if (spiSize != size)
+	{
+		__HAL_SPI_DISABLE(&hspi3);
+		spiSize = size;
+		if (size == 1)
+		{
+			hspi3.Init.DataSize = SPI_DATASIZE_16BIT;
+			// The HAL doesn't allow dynamic changes to datasize, so the code just writes the register directly
+
+			// H723 uses lowest 5 bits of CFG1 to hold datasize-1
+			hspi3.Instance->CFG1 = (hspi3.Instance->CFG1 & 0xFFFFFFE0) | SPI_DATASIZE_16BIT;
+		}
+		else
+		{
+			hspi3.Init.DataSize = SPI_DATASIZE_8BIT;
+
+			// H723 uses lowest 5 bits of CFG1 to hold datasize-1
+			hspi3.Instance->CFG1 = (hspi3.Instance->CFG1 & 0xFFFFFFE0) | SPI_DATASIZE_8BIT;
+		}
+	}
+}
+
+// Buffer used for LCD_Clear when using DMA
+// Needs to be aligned for cache management. Use a full cacheline (32 bytes) to prevent side effects
+ALIGN_32BYTES (uint16_t fillBuffer[16]);
 
 /*****************************************************************************
  * @name       :void LCD_Clear(u16 Color)
@@ -229,63 +280,52 @@ ALIGN_32BYTES (uint16_t lineBuffer[320]);
  ******************************************************************************/
 void LCD_Clear(u16 Color)
 {
-	unsigned int i, m;
+	const uint32_t CLEAR_CHUNKSIZE = 62 * 1024 / 2;	// divide by 2 since we're transferring 16bit words
 
-	// uint16_t *lineBuffer = NULL;
-
+	// enable writing to the entire screen area
 	LCD_SetWindows(0, 0, lcddev.width - 1, lcddev.height - 1);
+
+	// Switch SPI to 16 bit mode
+	SPI_SetSize(1);
+
+	// turn off memory increment on the dma stream
+	setDMAmemInc(false);
+
 	LCD_CS_CLR;
 	LCD_RS_SET;
 
-	// lineBuffer = (uint16_t *)malloc(lcddev.width * sizeof(uint16_t));
-	if (lineBuffer == NULL)
-	{
-		// pixel by pixel
-		for (i = 0; i < lcddev.height; i++)
-		{
-			for (m = 0; m < lcddev.width; m++)
-			{
-				// SPI2_ReadWriteByte(Color >> 8);
-				// SPI2_ReadWriteByte(Color);
-				uint8_t data[] = {Color >> 8, Color & 0xFF};
-				HAL_SPI_Transmit(&hspi3, data, 2, HAL_MAX_DELAY);
-			}
+	// only using the first word of the buffer since mem increment is disabled
+	fillBuffer[0] = Color;
+
+	// flush the dcache for the buffer so that the data is in ram for the dma to use
+	SCB_CleanDCache_by_Addr((uint32_t *) fillBuffer, sizeof(uint16_t));
+
+	uint32_t pixelsToClear = lcddev.width * lcddev.height;
+
+	while(pixelsToClear > 0) {
+		uint32_t thisChunk = pixelsToClear > CLEAR_CHUNKSIZE ? CLEAR_CHUNKSIZE : pixelsToClear;
+		HAL_StatusTypeDef status = HAL_BUSY;
+		while (status == HAL_BUSY) {
+			// DMA is transferring 16 bit words, and the last param to the call is in words not bytes
+			status = HAL_SPI_Transmit_DMA(&hspi3, (uint8_t*)fillBuffer, thisChunk);
+			if (status == HAL_BUSY) osThreadYield();
 		}
-	} else {
-		const uint16_t swappedColour = (Color << 8) | (Color >> 8);
-
-		// prep a line
-		for (m = 0; m < lcddev.width; m++) {
-			lineBuffer[m] = swappedColour;
-		}
-
-		// flush the dcache for the above
-		SCB_CleanDCache_by_Addr((uint32_t *) lineBuffer, lcddev.width * sizeof(uint16_t));
-
-
-		// now write full lines
-		for(i = 0; i < lcddev.height; i++) {
-			// HAL_SPI_Transmit(&hspi3, (uint8_t*)lineBuffer, lcddev.width * sizeof(uint16_t), HAL_MAX_DELAY);
-			HAL_StatusTypeDef status = HAL_BUSY;
-			while (status == HAL_BUSY) {
-				status = HAL_SPI_Transmit_DMA(&hspi3, (uint8_t*)lineBuffer, lcddev.width * sizeof(uint16_t));
-				// if (status == HAL_BUSY) osDelay(5);	// 5ms is too long here
-			}
-			spiTransmitInProgress = true;
-		}
-
-		// Need to wait for the transfer to complete before releasing CS
-		while (spiTransmitInProgress) {
-			osDelay(10);
-		}
-
-		// release the buffer
-		// free(lineBuffer);
-
+		spiTransmitInProgress = true;
+		pixelsToClear -= thisChunk;
 	}
 
+	// Need to wait for the transfer to complete before releasing CS
+	while (spiTransmitInProgress) {
+		osThreadYield();
+	}
 
 	LCD_CS_SET;
+
+	// Reset the SPI to 8 bit mode
+	SPI_SetSize(0);
+
+	// re-enable memory increment on the dma stream
+	setDMAmemInc(true);
 }
 
 /**
@@ -306,27 +346,35 @@ void LCD_WriteWindow(u16 x1, u16 y1, u16 x2, u16 y2, u16 *buf)
 	// Make sure that the buffer is in RAM for the dma to read
 	SCB_CleanDCache_by_Addr((uint32_t *) buf, bytesToSend);
 
+	// Switch to 16 bit transfers
+	SPI_SetSize(1);
+
 	LCD_CS_CLR;
 	LCD_RS_SET;
 
 	while(bytesToSend > 0) {
 		const uint32_t bytesToWrite = bytesToSend > CHUNKSIZE ? CHUNKSIZE : bytesToSend;
+
 		status = HAL_BUSY;
 		while (status == HAL_BUSY) {
-			status = HAL_SPI_Transmit_DMA(&hspi3, pData, bytesToWrite);
-			if (status == HAL_BUSY) osDelay(10);
+			status = HAL_SPI_Transmit_DMA(&hspi3, pData, bytesToWrite/2);
+			if (status == HAL_BUSY) osThreadYield();
 		}
 		spiTransmitInProgress = true;
+
 		pData += bytesToWrite;
 		bytesToSend -= bytesToWrite;
 	}
 
 	// Need to wait for the transfer to complete before releasing CS
 	while (spiTransmitInProgress) {
-		osDelay(10);
+		osThreadYield();
 	}
 
 	LCD_CS_SET;
+
+	// restore 8 bit transfers
+	SPI_SetSize(0);
 }
 
 /*****************************************************************************
