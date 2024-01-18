@@ -1073,6 +1073,32 @@ int EPD_test(void)
 }
 
 /**
+ * comparison func for passing to qsort
+*/
+static int compareAircraft(const void *p1, const void *p2)
+{
+  uint8_t index1 = *(uint8_t *)p1;
+  uint8_t index2 = *(uint8_t *)p2;
+
+  aircraft_t *aircraft1 = getContact(index1);
+  aircraft_t *aircraft2 = getContact(index2);
+
+  if (aircraft1 == NULL || aircraft2 == NULL) {
+    // The list must have changed while we were sorting it, return 0 as we have nothing good to do
+    return 0;
+  }
+
+  if (aircraft1->range > aircraft2->range) {
+    return 1;
+  } else if (aircraft1->range < aircraft2->range) {
+    return -1;
+  }
+
+  return 0;
+}
+
+
+/**
  * Task dedicated to maintaining the epaper display with it's very slow update rate
 */
 void epaperTask(void *argument)
@@ -1146,15 +1172,22 @@ void epaperTask(void *argument)
 
     const int nContacts = getNumContacts();
 
+    uint8_t aircraftIndexByDistance[MAX_CONTACTS];
+
     if (nContacts > 0) {
-      // float minRange = 100;
-      // int32_t closestIndex = -1;
 
       Paint_DrawString_EN(0, 0, " Range Brng  Spd Trk Alt   Msgs Age", contactListFont, BLACK, WHITE);
 
+      // Init the lookup array that we can sort by distance
+      for (int i=0; i<nContacts; i++) {
+        aircraftIndexByDistance[i] = i;
+      }
+
+      qsort(aircraftIndexByDistance, nContacts, sizeof(uint8_t), compareAircraft);
+
       int epdLine = 1;
       for(int i=0; i<nContacts; i++) {
-        aircraft_t *aircraft = getContact(i);
+        aircraft_t *aircraft = getContact(aircraftIndexByDistance[i]);
         if (aircraft) { // in case the number of entries in the list changes since we read it
 
           // By comparing the track and the bearing we can tell which aircraft are closing
@@ -1193,30 +1226,11 @@ void epaperTask(void *argument)
             if (epdLine >= 10) break; // no need to process more aircraft if we're out of display lines
           }
 
-          // if (closing && rangeNM < minRange) {
-          //   minRange = rangeNM;
-          //   closestIndex = i;
-          // }
-
-          // Radar plot - old code for the LCD, might be useful later
-          // if (rangeNM < 50) {
-          //   // scale range to the size of the circle for a MAX_PLOT_RANGE NM display
-          //   uint32_t radius = rangeNM * PlotRadius / MAX_PLOT_RANGE;
-          //   // and limit so that distant contacts are drawn at the edge
-          //   if (radius > PlotRadius) radius = PlotRadius;
-          //   uint16_t cx = 120 + (int)(radius * sin((aircraft->bearing+180)*M_PI/180));
-          //   uint16_t cy = 120 - (int)(radius * cos((aircraft->bearing+180)*M_PI/180)); // minus since 0 is top of display
-          //   // printf("drawing at %u %u\n", cx, cy);
-          //   UG_COLOR contactColour = C_GREEN;
-          //   if (closing) contactColour = C_RED;
-          //   // UG_DrawPixel(cx, cy, contactColour);
-          //   UG_FillFrame(cx-1, cy-1, cx+1, cy+1, contactColour);
-          // } // if (rangeNM < 50)
 
         } // if (aircraft)
       } // for (each contact)
 
-    }
+    } // if (nContacts > 0)
 
     // Update the epaper display
     // cs = getCycles();
