@@ -329,18 +329,23 @@ void LCD_Clear(u16 Color)
 }
 
 /**
- * LCD_WriteWindow(u16 x1, u16 y1, u16 x2, u16 y2, u16 *buf)
+ * LCD_WriteWindow
  * 
  * Copy the buffer to the specified window
+ * @param x x coordinate of top left corner
+ * @param y y coordinate of top left corner
+ * @param width width of the window
+ * @param height height of the window
+ * @param buf pointer to the buffer to copy
 */
-void LCD_WriteWindow(u16 x1, u16 y1, u16 x2, u16 y2, u16 *buf)
+void LCD_WriteWindow(u16 x, u16 y, u16 width, u16 height, u16 *buf)
 {
 	HAL_StatusTypeDef status;
 
 	const uint32_t CHUNKSIZE = 48*1024;
-	LCD_SetWindows(x1, y1, x2, y2);
+	LCD_SetWindows(x, y, x + width - 1, y + height -1);
 
-	uint32_t bytesToSend = (x2 - x1 + 1) * (y2 - y1 + 1) * 2;
+	uint32_t bytesToSend = width * height * 2;
 	uint8_t * pData = (uint8_t *)buf;
 
 	// Make sure that the buffer is in RAM for the dma to read

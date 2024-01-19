@@ -94,6 +94,17 @@ UG_GUI* UG_GetGUI( void )
    return gui;
 }
 
+/**
+ * Used for painting to a local frame buffer
+*/
+void UG_drawPixelFB(UG_S16 x, UG_S16 y, UG_COLOR c)
+{
+   if (gui->device->fb == NULL || x >= gui->device->x_dim || y >= gui->device->y_dim) return;
+
+   uint32_t index = x + y * gui->device->x_dim;
+   gui->device->fb[index] = c;
+}
+
 /*
  * Sets the GUI font
  */

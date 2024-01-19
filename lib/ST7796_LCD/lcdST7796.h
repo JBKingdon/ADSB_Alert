@@ -146,7 +146,7 @@ u16  LCD_ReadPoint(u16 x,u16 y);
 // void LCD_DrawLine(u16 x1, u16 y1, u16 x2, u16 y2);
 // void LCD_DrawRectangle(u16 x1, u16 y1, u16 x2, u16 y2);		   
 void LCD_SetWindows(u16 xStar, u16 yStar,u16 xEnd,u16 yEnd);
-void LCD_WriteWindow(u16 x1, u16 y1, u16 x2, u16 y2, u16 *buf);
+void LCD_WriteWindow(u16 x, u16 y, u16 width, u16 height, u16 *buf);
 
 u8   LCD_RD_DATA(void);
 void LCD_WriteReg(u8 LCD_Reg, u16 LCD_RegValue);

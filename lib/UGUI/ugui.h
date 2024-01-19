@@ -366,6 +366,7 @@ struct _UG_DEVICE {
    UG_S16 y_dim;
    PixelSetFunc pset;
    FlushFunc flush;
+   UG_U16 *fb;    // non-NULL indicates local storage
 };
 
 typedef struct
@@ -522,5 +523,8 @@ UG_S16 UG_WindowGetInnerWidth( UG_WINDOW* wnd );
 UG_S16 UG_WindowGetOuterWidth( UG_WINDOW* wnd );
 UG_S16 UG_WindowGetInnerHeight( UG_WINDOW* wnd );
 UG_S16 UG_WindowGetOuterHeight( UG_WINDOW* wnd );
+
+void UG_drawPixelFB(UG_S16 x, UG_S16 y, UG_COLOR c);
+
 
 #endif

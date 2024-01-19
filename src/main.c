@@ -1251,10 +1251,11 @@ void epaperTask(void *argument)
 
 void nop(void) {}
 
+ALIGN_32BYTES (uint16_t radarWindow[200*200]);
+
 /**
  * Runs periodically to write debug to stdout and update the LCD
  * 
- *
 */
 void statusTask(void *argument)
 {
@@ -1290,9 +1291,9 @@ void statusTask(void *argument)
     .flush = nop,
   };
 
-  LCD_Clear(C_RED);
-  LCD_Clear(C_GREEN);
-  LCD_Clear(C_BLUE);
+  // LCD_Clear(C_RED);
+  // LCD_Clear(C_GREEN);
+  // LCD_Clear(C_BLUE);
   
   cs = getCycles();
   LCD_Clear(BLACK);
@@ -1312,6 +1313,32 @@ void statusTask(void *argument)
   UG_SelectGUI(guiLCD1p);
 
   vTaskDelay(1000);
+
+  UG_DEVICE deviceRadarWindow = {
+    .x_dim = 200,
+    .y_dim = 200,
+    .pset = UG_drawPixelFB,
+    .flush = nop,
+    .fb = radarWindow
+  };
+
+  UG_GUI guiRadarWindow;
+  memset(&guiRadarWindow, 0, sizeof(guiRadarWindow));
+
+  UG_Init(&guiRadarWindow, &deviceRadarWindow);
+  UG_FillScreen(C_DARK_GOLDEN_ROD);
+  UG_FontSelect(FONT_12X16);
+  UG_SetBackcolor(BackgroundColour);
+  UG_SetForecolor(C_WHITE);
+  UG_DrawLine(0, 0, 199, 199, C_RED);
+  UG_DrawLine(0, 199, 199, 0, C_RED);
+  UG_PutString(99-24, 99-8, "ADSB");
+
+  UG_SelectGUI(guiLCD1p);
+
+  LCD_WriteWindow(140, 60, 200, 200, radarWindow);
+  
+  vTaskDelay(10000);
 
   while(true)
   {
@@ -1489,7 +1516,7 @@ void statusTask(void *argument)
     uint16_t * smallFB = ST77xx_LCD_GetFB();
 
     // Copy the small lcd frame to the big lcd
-    LCD_WriteWindow(0, 0, 239, 239, smallFB);
+    LCD_WriteWindow(0, 0, 240, 240, smallFB);
 
 
     #endif // BEAST_OUTPUT
