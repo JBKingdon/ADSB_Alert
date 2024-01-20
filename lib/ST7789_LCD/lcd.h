@@ -18,7 +18,7 @@
 
 // DMA will need work for H7 port
 // #define USE_DMA                       /* Use DMA for transfers when possible */
-#define LCD_LOCAL_FB                /* Use local framebuffer. Needs a lot of ram, but removes flickering and redrawing glitches  */
+// #define LCD_LOCAL_FB                /* Use local framebuffer. Needs a lot of ram, but removes flickering and redrawing glitches  */
 
 //#define USE_ST7735                    /* LCD Selection */
 #define USE_ST7789

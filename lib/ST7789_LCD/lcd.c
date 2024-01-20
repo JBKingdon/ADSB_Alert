@@ -86,12 +86,12 @@ static UG_DEVICE device = {
 
 #define mode_16bit    1
 #define mode_8bit     0
+
 /*
  * @brief Sets SPI interface word size (0=8bit, 1=16 bit)
  * @param none
  * @return none
  */
-
 static void setSPI_Size(int8_t size){
 
   if(config.spi_sz!=size){
@@ -595,10 +595,10 @@ void ST77xx_LCD_init(void)
 #endif
   UG_Init(&gui, &device);
 #ifndef LCD_LOCAL_FB
-  UG_DriverRegister(DRIVER_DRAW_LINE, LCD_DrawLine);
-  UG_DriverRegister(DRIVER_FILL_FRAME, LCD_Fill);
-  UG_DriverRegister(DRIVER_FILL_AREA, LCD_FillArea);
-  UG_DriverRegister(DRIVER_DRAW_BMP, LCD_DrawImage);
+  UG_DriverRegister(DRIVER_DRAW_LINE, ST77xx_LCD_DrawLine);
+  UG_DriverRegister(DRIVER_FILL_FRAME, ST77xx_LCD_Fill);
+  UG_DriverRegister(DRIVER_FILL_AREA, ST77xx_LCD_FillArea);
+  UG_DriverRegister(DRIVER_DRAW_BMP, ST77xx_LCD_DrawImage);
 #endif
   UG_FontSetHSpace(0);
   UG_FontSetVSpace(0);

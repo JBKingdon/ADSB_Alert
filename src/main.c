@@ -8,7 +8,6 @@
 #include "stm32h7xx_hal.h"
 #include "cmsis_os.h"
 #include <stdio.h>
-// #include <stdlib.h> // malloc() free()
 #include "usb_device.h"
 #include "usbd_cdc.h"
 #include <stdbool.h>
@@ -18,18 +17,19 @@
 #include "r820t2.h"
 #include "main.h"
 #include "lcd.h"      // For small LCD panel
-// #include "ugui.h"
-// #include "epaper.h"
+#include "ugui.h"
+
 #include "EPD_2in9_V2.h"  // Waveshare library for ePaper display
 #include "GUI_Paint.h"    // UI library for the ePaper display
 // #include "ImageData.h" // for the ePaper test code
 // #include "Debug.h"        // for the ePaper library
 
-#include "lcdST7796.h"
+#include "lcdST7796.h"    // For the 3.5" LCD panel
 
 #include "perfUtil.h"
 
 // Max range in NM to show on the 'radar'
+// TODO make the range dynamic depending on the closest approaching contact
 #define MAX_PLOT_RANGE 20
 
 
@@ -39,6 +39,12 @@
 #endif
 __attribute__((section(".fast_data")))
 uint8_t image_bw[EPD_2IN9_V2_WIDTH / 8 * EPD_2IN9_V2_HEIGHT];
+
+
+// Storage for the radar display window on the large LCD
+#define RADAR_WIN_SIZE 240
+ALIGN_32BYTES (uint16_t radarWindow[RADAR_WIN_SIZE * RADAR_WIN_SIZE]);
+
 
 // #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  4096)   /* number of entries of array aADCxConvertedData[] */
 #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  16384)   /* number of entries of array aADCxConvertedData[] */
@@ -871,20 +877,30 @@ int filteredAmplitudeToBitStream(uint16_t *input, int len, int start)
   return 112;
 }
 
-const uint32_t PlotRadius = 115;
 const UG_U16 BackgroundColour = C_BLACK;
 
-void drawBackground()
+/**
+ * Clear the window and draw the distance rings and center marker
+ * @param size diameter of the plot in pixels
+*/
+void drawBackground(const uint16_t size)
 {
-  // LCD_Fill(0, 0, 239, 239, BackgroundColour);
   UG_FillScreen(BackgroundColour);
 
-  UG_DrawCircle(120, 120, PlotRadius, C_LIGHT_GRAY);
+  const UG_S16 half_width = UG_GetXDim() / 2;
+  const UG_S16 half_height = UG_GetYDim() / 2;
+
+  UG_DrawCircle(half_width, half_height, size/2, C_LIGHT_GRAY);
+
+  // TODO intermediate circles should depend on the scale
+  if (MAX_PLOT_RANGE == 20) {
+    UG_DrawCircle(half_width, half_height, size/4, C_DARK_GRAY); // 10NM marker
+  }
 
   // Center marker
   const uint32_t CenterMarkerSize = 2;
-  UG_DrawTriangle(120-CenterMarkerSize, 120+CenterMarkerSize, 120, 120-CenterMarkerSize, 120+CenterMarkerSize, 120+CenterMarkerSize, C_WHITE);
-
+  UG_DrawTriangle(half_width-CenterMarkerSize, half_height+CenterMarkerSize, half_width, half_height-CenterMarkerSize, 
+                  half_width+CenterMarkerSize, half_height+CenterMarkerSize, C_WHITE);
 }
 
 int EPD_test(void)
@@ -1249,9 +1265,59 @@ void epaperTask(void *argument)
   }
 }
 
-void nop(void) {}
+/**
+ * Draw the contact position on the 'radar' display
+*/
+void drawContact(const uint16_t plotDiameter, const aircraft_t *aircraft, bool closing)
+{
+  const uint16_t PlotRadius = plotDiameter/2;
+  const float rangeNM = aircraft->range / 1.852;
+  const uint32_t halfWidth = UG_GetXDim()/2;
+  const uint32_t halfHeight = UG_GetYDim()/2;
 
-ALIGN_32BYTES (uint16_t radarWindow[200*200]);
+  if (rangeNM < 50) {
+    // scale range to the size of the circle for the display (MAX_PLOT_RANGE in NM)
+    uint32_t radius = rangeNM * PlotRadius / MAX_PLOT_RANGE;
+    // and limit so that distant contacts are drawn at the edge
+    if (radius > PlotRadius) radius = PlotRadius;
+    uint16_t cx = halfWidth + (int)(radius * sin((aircraft->bearing+180)*M_PI/180));
+    uint16_t cy = halfHeight - (int)(radius * cos((aircraft->bearing+180)*M_PI/180)); // minus since 0 is top of display
+    // printf("drawing at %u %u\n", cx, cy);
+    UG_COLOR contactColour = C_GREEN;
+    if (closing) contactColour = C_RED;
+
+    // Draw a dot to show the position of the aircraft
+    const uint32_t MarkSize = 2;
+    UG_FillFrame(cx-MarkSize, cy-MarkSize, cx+MarkSize, cy+MarkSize, contactColour);
+
+    // Draw a line representing the velocity vector of the aircraft
+    // TODO figure out what to do when the line goes outside the drawing area
+    const uint32_t speed = aircraft->speed * PlotRadius / (MAX_PLOT_RANGE * 60);  // 60s distance in pixels
+    const float bearing = aircraft->track;
+    const float bearingRad = bearing * M_PI / 180;
+    const int32_t x = cx + (int)(speed * sinf(bearingRad));
+    const int32_t y = cy - (int)(speed * cosf(bearingRad));
+    UG_DrawLine(cx, cy, x, y, contactColour);
+
+    // Don't show the position estimate indicator if the contact is clipped to the edge of the display
+    if (radius != PlotRadius) {
+      // Draw a dot to show the estimated position along the track if the age is older than 10s
+      const uint32_t tPosition = aircraft->timestampLatLon;
+      const uint32_t tNow = HAL_GetTick();
+      const uint32_t tSincePosition = (tNow - tPosition)/1000;
+      if (tSincePosition > 10) {
+        const uint32_t estDistance = speed * tSincePosition / 60; // scale the original 60s velocity vector by tSincePosition
+
+        const int32_t xEst = cx + (int)(estDistance * sinf(bearingRad));
+        const int32_t yEst = cy - (int)(estDistance * cosf(bearingRad));
+        UG_FillFrame(xEst-1, yEst-1, xEst+1, yEst+1, C_WHITE);
+      }
+    }
+
+  } // if (rangeNM < 50)
+}
+
+void nop(void) {}
 
 /**
  * Runs periodically to write debug to stdout and update the LCD
@@ -1276,7 +1342,7 @@ void statusTask(void *argument)
 
   // ST7789_Test();
 
-  drawBackground();
+  drawBackground(230);
   UG_Update();
 
   lcd2_gpio_init();
@@ -1306,17 +1372,14 @@ void statusTask(void *argument)
   memset(&guiLCD2, 0, sizeof(guiLCD2));
 
   UG_Init(&guiLCD2, &deviceLCD2);
-  UG_FontSelect(FONT_7X12);
-  UG_SetBackcolor(BackgroundColour);
-  UG_SetForecolor(C_WHITE);
-  UG_PutString(0, 0, "HELLO WORLD!");
+
   UG_SelectGUI(guiLCD1p);
 
   vTaskDelay(1000);
 
   UG_DEVICE deviceRadarWindow = {
-    .x_dim = 200,
-    .y_dim = 200,
+    .x_dim = RADAR_WIN_SIZE,
+    .y_dim = RADAR_WIN_SIZE,
     .pset = UG_drawPixelFB,
     .flush = nop,
     .fb = radarWindow
@@ -1326,19 +1389,29 @@ void statusTask(void *argument)
   memset(&guiRadarWindow, 0, sizeof(guiRadarWindow));
 
   UG_Init(&guiRadarWindow, &deviceRadarWindow);
+
+  UG_FontSetHSpace(0);
+  UG_FontSetVSpace(0);
+
   UG_FillScreen(C_DARK_GOLDEN_ROD);
   UG_FontSelect(FONT_12X16);
-  UG_SetBackcolor(BackgroundColour);
+  // UG_SetBackcolor(BackgroundColour);
   UG_SetForecolor(C_WHITE);
-  UG_DrawLine(0, 0, 199, 199, C_RED);
-  UG_DrawLine(0, 199, 199, 0, C_RED);
-  UG_PutString(99-24, 99-8, "ADSB");
+  UG_PutString((RADAR_WIN_SIZE/2)-24, (RADAR_WIN_SIZE/2)-8, "ADSB");
+
+  UG_FontSelect(FONT_7X12);
+  UG_SetForecolor(C_WHITE);
+  UG_SetBackcolor(BackgroundColour);
 
   UG_SelectGUI(guiLCD1p);
 
-  LCD_WriteWindow(140, 60, 200, 200, radarWindow);
+  UG_FontSelect(FONT_7X12);
+  UG_SetForecolor(C_WHITE);
+  UG_SetBackcolor(BackgroundColour);
+
+  LCD_WriteWindow((LCD_H/2)-(RADAR_WIN_SIZE/2), (LCD_W/2)-(RADAR_WIN_SIZE/2), RADAR_WIN_SIZE, RADAR_WIN_SIZE, radarWindow);
   
-  vTaskDelay(10000);
+  vTaskDelay(1000);
 
   while(true)
   {
@@ -1367,15 +1440,18 @@ void statusTask(void *argument)
 
     // printf("average %u\n", globalAvg);
 
-    drawBackground();
+    UG_SelectGUI(guiLCD1p);
+    drawBackground(230);
+
+    UG_SelectGUI(&guiRadarWindow);
+    drawBackground(RADAR_WIN_SIZE-10);
 
     const int nContacts = getNumContacts();
 
-    UG_FontSelect(FONT_7X12);
-    UG_SetForecolor(C_WHITE);
-    UG_SetBackcolor(BackgroundColour);
-
     sprintf(buf, "%d ", nContacts);
+    UG_PutString(0, 0, buf);
+
+    UG_SelectGUI(guiLCD1p);
     UG_PutString(0, 0, buf);
 
     if (nContacts > 0) {
@@ -1435,44 +1511,12 @@ void statusTask(void *argument)
             closestIndex = i;
           }
 
-          if (rangeNM < 50) {
-            // scale range to the size of the circle for the display (MAX_PLOT_RANGE in NM)
-            uint32_t radius = rangeNM * PlotRadius / MAX_PLOT_RANGE;
-            // and limit so that distant contacts are drawn at the edge
-            if (radius > PlotRadius) radius = PlotRadius;
-            uint16_t cx = 120 + (int)(radius * sin((aircraft->bearing+180)*M_PI/180));
-            uint16_t cy = 120 - (int)(radius * cos((aircraft->bearing+180)*M_PI/180)); // minus since 0 is top of display
-            // printf("drawing at %u %u\n", cx, cy);
-            UG_COLOR contactColour = C_GREEN;
-            if (closing) contactColour = C_RED;
+          UG_SelectGUI(guiLCD1p);
+          drawContact(230, aircraft, closing);
 
-            // Draw a dot to show the position of the aircraft
-            const uint32_t MarkSize = 2;
-            UG_FillFrame(cx-MarkSize, cy-MarkSize, cx+MarkSize, cy+MarkSize, contactColour);
+          UG_SelectGUI(&guiRadarWindow);
+          drawContact(RADAR_WIN_SIZE-10, aircraft, closing);
 
-            // Draw a line representing the velocity vector of the aircraft
-            // TODO figure out what to do when the line goes outside the drawing area
-            const uint32_t speed = aircraft->speed * PlotRadius / (MAX_PLOT_RANGE * 60);  // 60s distance in pixels
-            const float bearing = aircraft->track;
-            const float bearingRad = bearing * M_PI / 180;
-            const int32_t x = cx + (int)(speed * sinf(bearingRad));
-            const int32_t y = cy - (int)(speed * cosf(bearingRad));
-            UG_DrawLine(cx, cy, x, y, contactColour);
-
-            // Draw a dot to show the estimated position along the track if the age is older than 10s
-            // XXX This needs to use the age of the last position update
-            const uint32_t tPosition = aircraft->timestampLatLon;
-            tNow = HAL_GetTick();
-            const uint32_t tSincePosition = (tNow - tPosition)/1000;
-            if (tSincePosition > 10) {
-              const uint32_t estDistance = speed * tSincePosition / 60; // scale the original 60s velocity vector by tSincePosition
-
-              const int32_t xEst = cx + (int)(estDistance * sinf(bearingRad));
-              const int32_t yEst = cy - (int)(estDistance * cosf(bearingRad));
-              UG_FillFrame(xEst-1, yEst-1, xEst+1, yEst+1, C_WHITE);
-            }
-
-          } // if (rangeNM < 50)
         } // if (aircraft)
       } // for (each contact)
       // printf("furthest: %d, oldest: %d\n", findMostDistantContact(), findOldestContact());
@@ -1483,6 +1527,10 @@ void statusTask(void *argument)
 
       // Show the number of approaching aircraft
       sprintf(buf, "%d ", nApproaching);
+      UG_SelectGUI(guiLCD1p);
+      UG_PutString(0, 20, buf);
+
+      UG_SelectGUI(&guiRadarWindow);
       UG_PutString(0, 20, buf);
 
       // Show the closest aircraft info in the top right corner
@@ -1491,32 +1539,40 @@ void statusTask(void *argument)
         if (aircraft) {
           sprintf(buf, "%d", aircraft->modeC);
           size_t len = strlen(buf);
+          UG_SelectGUI(&guiRadarWindow);
+          UG_FONT * activeFont = UG_GetGUI()->font;
+          const uint32_t fWidth = UG_GetFontWidth(activeFont);
+          UG_PutString((RADAR_WIN_SIZE-1)-(len * fWidth), 0, buf);
+
+          UG_SelectGUI(guiLCD1p);
           UG_PutString(239-(len * 7), 0, buf);
 
           sprintf(buf, "%2.1f", minRange);
           len = strlen(buf);
+          UG_SelectGUI(guiLCD1p);
           UG_PutString(239-(len * 7), 20, buf);
+          UG_SelectGUI(&guiRadarWindow);
+          UG_PutString((RADAR_WIN_SIZE-1)-(len * 7), 20, buf);
 
           sprintf(buf, "%d", aircraft->speed);
           len = strlen(buf);
+          UG_SelectGUI(guiLCD1p);
           UG_PutString(239-(len * 7), 40, buf);
+          UG_SelectGUI(&guiRadarWindow);
+          UG_PutString((RADAR_WIN_SIZE-1)-(len * 7), 40, buf);
         }
-      } else {
-        // not needed if doing a redraw each time
-        // TODO replace with fill calls
-        // UG_PutString(239-(5*7),  0, "     ");
-        // UG_PutString(239-(4*7), 20, "    ");
-        // UG_PutString(239-(3*7), 40, "   ");
       }
     } // if (nContacts > 0)
 
-    // Update the LCD
+    // Update the small LCD
+    UG_SelectGUI(guiLCD1p);
     UG_Update();
 
-    uint16_t * smallFB = ST77xx_LCD_GetFB();
-
     // Copy the small lcd frame to the big lcd
-    LCD_WriteWindow(0, 0, 240, 240, smallFB);
+    // uint16_t * smallFB = ST77xx_LCD_GetFB();
+    // LCD_WriteWindow(0, 0, 240, 240, smallFB);
+
+    LCD_WriteWindow(0, 0, RADAR_WIN_SIZE, RADAR_WIN_SIZE, radarWindow);
 
 
     #endif // BEAST_OUTPUT
