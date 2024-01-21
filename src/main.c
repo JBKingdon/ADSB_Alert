@@ -16,7 +16,6 @@
 #include "localConfig.h"
 #include "r820t2.h"
 #include "main.h"
-#include "lcd.h"      // For small LCD panel
 #include "ugui.h"
 
 #include "EPD_2in9_V2.h"  // Waveshare library for ePaper display
@@ -33,6 +32,7 @@
 #define MAX_PLOT_RANGE 20
 
 
+// Frame buffer for the epaper display
 // only valid if width is a multiple of 8
 #if EPD_2IN9_V2_WIDTH % 8 != 0
 #error "width not multiple of 8"
@@ -45,7 +45,7 @@ uint8_t image_bw[EPD_2IN9_V2_WIDTH / 8 * EPD_2IN9_V2_HEIGHT];
 #define RADAR_WIN_SIZE 240
 ALIGN_32BYTES (uint16_t radarWindow[RADAR_WIN_SIZE * RADAR_WIN_SIZE]);
 
-
+// TODO implement processing packets that cross buffer boundaries and then reduce buffer size again
 // #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  4096)   /* number of entries of array aADCxConvertedData[] */
 #define ADC_CONVERTED_DATA_BUFFER_SIZE   ((uint32_t)  16384)   /* number of entries of array aADCxConvertedData[] */
 
@@ -65,11 +65,10 @@ extern USBD_HandleTypeDef hUsbDeviceHS;
 I2C_HandleTypeDef hi2c1;
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
-SPI_HandleTypeDef hspi1;    // 1" lcd
+// SPI_HandleTypeDef hspi1;    // 1" lcd
 SPI_HandleTypeDef hspi2;    // epaper
 SPI_HandleTypeDef hspi3;    // 3.5" lcd
 DMA_HandleTypeDef hdma_spi3_tx;
-
 
 TIM_HandleTypeDef htim7;  // not used yet
 
@@ -103,7 +102,7 @@ static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM7_Init(void);
 static void MX_I2C1_Init(void);
-static void MX_SPI1_Init(void);
+// static void MX_SPI1_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_SPI3_Init(void);
 
@@ -121,6 +120,12 @@ uint32_t conversionsCompleted = 0;
 uint32_t missedBuffers = 0;
 uint32_t usSpentByDemod = 0;
 uint32_t demodPercent = 0;
+
+// more stats to do:
+// packets that crossed the buffer boundary
+// total messages decoded
+// 1 bit crc corrections
+// crc fails
 
 // Flags used by the ISR handlers to indicate which half of the buffer is ready
 bool lowBuf = false;
@@ -153,7 +158,7 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM7_Init();
   MX_I2C1_Init();
-  MX_SPI1_Init();
+  // MX_SPI1_Init();
   MX_SPI2_Init();
   MX_SPI3_Init();
 
@@ -484,40 +489,40 @@ static void MX_I2C1_Init(void)
   * @param None
   * @retval None
   */
-static void MX_SPI1_Init(void)
-{
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES_TXONLY;
-  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_HIGH;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
-  // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
-  // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
-  // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
-  // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 0x0;
-  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  hspi1.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
-  hspi1.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
-  hspi1.Init.TxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
-  hspi1.Init.RxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
-  hspi1.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
-  hspi1.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
-  hspi1.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
-  hspi1.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;
-  hspi1.Init.IOSwap = SPI_IO_SWAP_DISABLE;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-}
+// static void MX_SPI1_Init(void)
+// {
+//   /* SPI1 parameter configuration*/
+//   hspi1.Instance = SPI1;
+//   hspi1.Init.Mode = SPI_MODE_MASTER;
+//   hspi1.Init.Direction = SPI_DIRECTION_2LINES_TXONLY;
+//   hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+//   hspi1.Init.CLKPolarity = SPI_POLARITY_HIGH;
+//   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+//   hspi1.Init.NSS = SPI_NSS_SOFT;
+//   hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+//   // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+//   // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
+//   // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+//   // hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;
+//   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+//   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+//   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+//   hspi1.Init.CRCPolynomial = 0x0;
+//   hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+//   hspi1.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
+//   hspi1.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
+//   hspi1.Init.TxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
+//   hspi1.Init.RxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
+//   hspi1.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
+//   hspi1.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
+//   hspi1.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
+//   hspi1.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;
+//   hspi1.Init.IOSwap = SPI_IO_SWAP_DISABLE;
+//   if (HAL_SPI_Init(&hspi1) != HAL_OK)
+//   {
+//     Error_Handler();
+//   }
+// }
 
 /**
   * @brief SPI2 Initialization Function
@@ -903,190 +908,6 @@ void drawBackground(const uint16_t size)
                   half_width+CenterMarkerSize, half_height+CenterMarkerSize, C_WHITE);
 }
 
-int EPD_test(void)
-{
-  const uint16_t ROTATION = 270;
-
-  printf("EPD_2IN9_V2_test Demo\r\n");
-  // if (DEV_Module_Init() != 0)
-  // {
-  //   return -1;
-  // }
-
-  printf("e-Paper Init and Clear...\r\n");
-  EPD_2IN9_V2_Init();
-  EPD_2IN9_V2_Clear();
-  DEV_Delay_ms(1000);
-
-  // Create a new image cache
-  UBYTE *BlackImage;
-  UWORD Imagesize = ((EPD_2IN9_V2_WIDTH % 8 == 0) ? (EPD_2IN9_V2_WIDTH / 8) : (EPD_2IN9_V2_WIDTH / 8 + 1)) * EPD_2IN9_V2_HEIGHT;
-  if ((BlackImage = (UBYTE *)malloc(Imagesize)) == NULL)
-  {
-    printf("Failed to apply for black memory...\r\n");
-    return -1;
-  }
-  printf("Paint_NewImage\r\n");
-  Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, ROTATION, WHITE);
-  Paint_Clear(WHITE);
-
-#if 0 // show image for array
-  Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, ROTATION, WHITE);
-  printf("show image for array\r\n");
-  Paint_SelectImage(BlackImage);
-  Paint_Clear(WHITE);
-  Paint_DrawBitMap(gImage_2in9);
-
-  EPD_2IN9_V2_Display(BlackImage);
-  DEV_Delay_ms(3000);
-#endif
-
-#if 1 // Drawing on the image
-  EPD_2IN9_V2_Init_Fast();
-  Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, ROTATION, WHITE);
-  printf("Drawing\r\n");
-  // 1.Select Image
-  Paint_SelectImage(BlackImage);
-  Paint_Clear(WHITE);
-
-  // 2.Drawing on the image
-  printf("Drawing:BlackImage\r\n");
-  Paint_DrawPoint(10, 80, BLACK, DOT_PIXEL_1X1, DOT_STYLE_DFT);
-  Paint_DrawPoint(10, 90, BLACK, DOT_PIXEL_2X2, DOT_STYLE_DFT);
-  Paint_DrawPoint(10, 100, BLACK, DOT_PIXEL_3X3, DOT_STYLE_DFT);
-
-  Paint_DrawLine(20, 70, 70, 120, BLACK, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
-  Paint_DrawLine(70, 70, 20, 120, BLACK, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
-
-  Paint_DrawRectangle(20, 70, 70, 120, BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-  Paint_DrawRectangle(80, 70, 130, 120, BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-
-  Paint_DrawCircle(45, 95, 20, BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-  Paint_DrawCircle(105, 95, 20, WHITE, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-
-  Paint_DrawLine(85, 95, 125, 95, BLACK, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
-  Paint_DrawLine(105, 75, 105, 115, BLACK, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
-
-  Paint_DrawString_EN(10, 0, "waveshare", &Font16, BLACK, WHITE);
-  Paint_DrawString_EN(10, 20, "hello world", &Font12, WHITE, BLACK);
-
-  Paint_DrawNum(10, 33, 123456789, &Font12, BLACK, WHITE);
-  Paint_DrawNum(10, 50, 987654321, &Font16, WHITE, BLACK);
-
-  // Paint_DrawString_CN(130, 0, "���abc", &Font12CN, BLACK, WHITE);
-  // Paint_DrawString_CN(130, 20, "΢ѩ����", &Font24CN, WHITE, BLACK);
-
-  EPD_2IN9_V2_Display_Base(BlackImage);
-  DEV_Delay_ms(3000);
-#endif
-
-#if 1 // Partial refresh, example shows time
-  Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, ROTATION, WHITE);
-  printf("Partial refresh\r\n");
-  Paint_SelectImage(BlackImage);
-
-  PAINT_TIME sPaint_time;
-  sPaint_time.Hour = 12;
-  sPaint_time.Min = 34;
-  sPaint_time.Sec = 56;
-  UBYTE num = 10;
-  for (;;)
-  {
-    sPaint_time.Sec = sPaint_time.Sec + 1;
-    if (sPaint_time.Sec == 60)
-    {
-      sPaint_time.Min = sPaint_time.Min + 1;
-      sPaint_time.Sec = 0;
-      if (sPaint_time.Min == 60)
-      {
-        sPaint_time.Hour = sPaint_time.Hour + 1;
-        sPaint_time.Min = 0;
-        if (sPaint_time.Hour == 24)
-        {
-          sPaint_time.Hour = 0;
-          sPaint_time.Min = 0;
-          sPaint_time.Sec = 0;
-        }
-      }
-    }
-    Paint_ClearWindows(150, 80, 150 + Font20.Width * 7, 80 + Font20.Height, WHITE);
-    Paint_DrawTime(150, 80, &sPaint_time, &Font20, WHITE, BLACK);
-
-    num = num - 1;
-    if (num == 0)
-    {
-      break;
-    }
-    EPD_2IN9_V2_Display_Partial(BlackImage);
-
-    // Does this still work if you suspend the display between updates? Yes
-    EPD_2IN9_V2_Sleep();
-
-    DEV_Delay_ms(500); // Analog clock 1s
-  }
-#endif
-
-#if 1 // show image for array
-  free(BlackImage);
-  printf("show Gray------------------------\r\n");
-  Imagesize = ((EPD_2IN9_V2_WIDTH % 4 == 0) ? (EPD_2IN9_V2_WIDTH / 4) : (EPD_2IN9_V2_WIDTH / 4 + 1)) * EPD_2IN9_V2_HEIGHT;
-  if ((BlackImage = (UBYTE *)malloc(Imagesize)) == NULL)
-  {
-    printf("Failed to apply for black memory...\r\n");
-    return -1;
-  }
-  EPD_2IN9_V2_Gray4_Init();
-  printf("4 grayscale display\r\n");
-  Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, ROTATION, WHITE);
-  Paint_SetScale(4);
-  Paint_Clear(0xff);
-
-  Paint_DrawPoint(10, 80, GRAY4, DOT_PIXEL_1X1, DOT_STYLE_DFT);
-  Paint_DrawPoint(10, 90, GRAY4, DOT_PIXEL_2X2, DOT_STYLE_DFT);
-  Paint_DrawPoint(10, 100, GRAY4, DOT_PIXEL_3X3, DOT_STYLE_DFT);
-  Paint_DrawLine(20, 70, 70, 120, GRAY4, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
-  Paint_DrawLine(70, 70, 20, 120, GRAY4, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
-  Paint_DrawRectangle(20, 70, 70, 120, GRAY4, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-  Paint_DrawRectangle(80, 70, 130, 120, GRAY4, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-  Paint_DrawCircle(45, 95, 20, GRAY4, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-  Paint_DrawCircle(105, 95, 20, GRAY2, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-  Paint_DrawLine(85, 95, 125, 95, GRAY4, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
-  Paint_DrawLine(105, 75, 105, 115, GRAY4, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
-  Paint_DrawString_EN(10, 0, "waveshare", &Font16, GRAY4, GRAY1);
-  Paint_DrawString_EN(10, 20, "hello world", &Font12, GRAY3, GRAY1);
-  Paint_DrawNum(10, 33, 123456789, &Font12, GRAY4, GRAY2);
-  Paint_DrawNum(10, 50, 987654321, &Font16, GRAY1, GRAY4);
-  // Paint_DrawString_CN(150, 0, "���abc", &Font12CN, GRAY4, GRAY1);
-  // Paint_DrawString_CN(150, 20, "���abc", &Font12CN, GRAY3, GRAY2);
-  // Paint_DrawString_CN(150, 40, "���abc", &Font12CN, GRAY2, GRAY3);
-  // Paint_DrawString_CN(150, 60, "���abc", &Font12CN, GRAY1, GRAY4);
-  // Paint_DrawString_CN(150, 80, "΢ѩ����", &Font24CN, GRAY1, GRAY4);
-  EPD_2IN9_V2_4GrayDisplay(BlackImage);
-  DEV_Delay_ms(3000);
-
-  // Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, 0, WHITE);
-  // Paint_SetScale(4);
-  // Paint_Clear(WHITE);
-  // Paint_DrawBitMap(gImage_2in9_4Gray);
-  // EPD_2IN9_V2_4GrayDisplay(BlackImage);
-  // DEV_Delay_ms(3000);
-
-#endif
-
-  printf("Clear...\r\n");
-  EPD_2IN9_V2_Init();
-  EPD_2IN9_V2_Clear();
-
-  printf("Goto Sleep...\r\n");
-  EPD_2IN9_V2_Sleep();
-  free(BlackImage);
-  BlackImage = NULL;
-  DEV_Delay_ms(2000); // important, at least 2s
-  // close 5V
-  // printf("close 5V, Module enters 0 power consumption ...\r\n");
-  // DEV_Module_Exit();
-  return 0;
-}
 
 /**
  * comparison func for passing to qsort
@@ -1317,55 +1138,26 @@ void drawContact(const uint16_t plotDiameter, const aircraft_t *aircraft, bool c
   } // if (rangeNM < 50)
 }
 
-void nop(void) {}
-
 /**
  * Runs periodically to write debug to stdout and update the LCD
  * 
 */
 void statusTask(void *argument)
 {
-  uint32_t cs, ce;  // For perf measurements
+  // uint32_t cs, ce;  // For perf measurements
   static uint32_t tLast = 0;
   char buf[40]; // for generating strings for the displays
-
-  ST77xx_LCD_init();
-
-  UG_GUI *guiLCD1p = UG_GetGUI();
-
-  ST77xx_LCD_Fill(0, 0, 239, 239, C_DARK_BLUE);
-  ST77xx_LCD_PutStr(10, 80, "ADSB ALERT", FONT_24X40, C_WHITE, C_DARK_BLUE);
-  ST77xx_LCD_PutStr(20, 120, "V0.0 (alpha)", FONT_16X26, C_WHITE, C_DARK_BLUE);
-  UG_Update();
-
-  vTaskDelay(1000);
-
-  // ST7789_Test();
-
-  drawBackground(230);
-  UG_Update();
 
   lcd2_gpio_init();
   LCD_Init();
   LCD_direction(1);
 
-
   UG_DEVICE deviceLCD2 = {
-    .x_dim = LCD_W,
-    .y_dim = LCD_H,
+    .x_dim = LCD_H,   // using in landscape mode, so x = _h, y - _w
+    .y_dim = LCD_W,
     .pset = LCD_DrawPixel,
-    .flush = nop,
+    .flush = NULL,     // draws straight onto the display, so no flush needed
   };
-
-  // LCD_Clear(C_RED);
-  // LCD_Clear(C_GREEN);
-  // LCD_Clear(C_BLUE);
-  
-  cs = getCycles();
-  LCD_Clear(BLACK);
-  ce = getCycles();
-
-  printf("LCD clear %lu\n", getDeltaUs(cs, ce));
 
   UG_GUI guiLCD2;
 
@@ -1373,16 +1165,32 @@ void statusTask(void *argument)
 
   UG_Init(&guiLCD2, &deviceLCD2);
 
-  UG_SelectGUI(guiLCD1p);
+  UG_FontSetHSpace(0);
+  UG_FontSetVSpace(0);
+
+  UG_FontSelect(FONT_24X40);
+  UG_FontSetTransparency(true);
+
+  LCD_Clear(C_DARK_BLUE);
+  UG_PutString(LCD_H/2-(5*24), 130, "ADSB ALERT");
+
+  UG_FontSelect(FONT_7X12);
+  UG_PutString(LCD_H/2-(3*7), 200, "V0.0.0");
+
+  UG_Update();
 
   vTaskDelay(1000);
+
+  LCD_Clear(BackgroundColour);
+
+  // Set up a frame for rendering the radar display (so that it doesn't flicker during updates)
 
   UG_DEVICE deviceRadarWindow = {
     .x_dim = RADAR_WIN_SIZE,
     .y_dim = RADAR_WIN_SIZE,
     .pset = UG_drawPixelFB,
-    .flush = nop,
-    .fb = radarWindow
+    .flush = NULL,
+    .fb = radarWindow   // memory for the frame buffer
   };
 
   UG_GUI guiRadarWindow;
@@ -1393,23 +1201,10 @@ void statusTask(void *argument)
   UG_FontSetHSpace(0);
   UG_FontSetVSpace(0);
 
-  UG_FillScreen(C_DARK_GOLDEN_ROD);
-  UG_FontSelect(FONT_12X16);
-  // UG_SetBackcolor(BackgroundColour);
-  UG_SetForecolor(C_WHITE);
-  UG_PutString((RADAR_WIN_SIZE/2)-24, (RADAR_WIN_SIZE/2)-8, "ADSB");
-
   UG_FontSelect(FONT_7X12);
   UG_SetForecolor(C_WHITE);
   UG_SetBackcolor(BackgroundColour);
 
-  UG_SelectGUI(guiLCD1p);
-
-  UG_FontSelect(FONT_7X12);
-  UG_SetForecolor(C_WHITE);
-  UG_SetBackcolor(BackgroundColour);
-
-  LCD_WriteWindow((LCD_H/2)-(RADAR_WIN_SIZE/2), (LCD_W/2)-(RADAR_WIN_SIZE/2), RADAR_WIN_SIZE, RADAR_WIN_SIZE, radarWindow);
   
   vTaskDelay(1000);
 
@@ -1440,18 +1235,12 @@ void statusTask(void *argument)
 
     // printf("average %u\n", globalAvg);
 
-    UG_SelectGUI(guiLCD1p);
-    drawBackground(230);
-
     UG_SelectGUI(&guiRadarWindow);
     drawBackground(RADAR_WIN_SIZE-10);
 
     const int nContacts = getNumContacts();
 
     sprintf(buf, "%d ", nContacts);
-    UG_PutString(0, 0, buf);
-
-    UG_SelectGUI(guiLCD1p);
     UG_PutString(0, 0, buf);
 
     if (nContacts > 0) {
@@ -1511,10 +1300,6 @@ void statusTask(void *argument)
             closestIndex = i;
           }
 
-          UG_SelectGUI(guiLCD1p);
-          drawContact(230, aircraft, closing);
-
-          UG_SelectGUI(&guiRadarWindow);
           drawContact(RADAR_WIN_SIZE-10, aircraft, closing);
 
         } // if (aircraft)
@@ -1527,10 +1312,7 @@ void statusTask(void *argument)
 
       // Show the number of approaching aircraft
       sprintf(buf, "%d ", nApproaching);
-      UG_SelectGUI(guiLCD1p);
-      UG_PutString(0, 20, buf);
 
-      UG_SelectGUI(&guiRadarWindow);
       UG_PutString(0, 20, buf);
 
       // Show the closest aircraft info in the top right corner
@@ -1539,43 +1321,24 @@ void statusTask(void *argument)
         if (aircraft) {
           sprintf(buf, "%d", aircraft->modeC);
           size_t len = strlen(buf);
-          UG_SelectGUI(&guiRadarWindow);
           UG_FONT * activeFont = UG_GetGUI()->font;
           const uint32_t fWidth = UG_GetFontWidth(activeFont);
           UG_PutString((RADAR_WIN_SIZE-1)-(len * fWidth), 0, buf);
 
-          UG_SelectGUI(guiLCD1p);
-          UG_PutString(239-(len * 7), 0, buf);
-
           sprintf(buf, "%2.1f", minRange);
           len = strlen(buf);
-          UG_SelectGUI(guiLCD1p);
-          UG_PutString(239-(len * 7), 20, buf);
-          UG_SelectGUI(&guiRadarWindow);
-          UG_PutString((RADAR_WIN_SIZE-1)-(len * 7), 20, buf);
+          UG_PutString((RADAR_WIN_SIZE-1)-(len * fWidth), 20, buf);
 
           sprintf(buf, "%d", aircraft->speed);
           len = strlen(buf);
-          UG_SelectGUI(guiLCD1p);
-          UG_PutString(239-(len * 7), 40, buf);
-          UG_SelectGUI(&guiRadarWindow);
-          UG_PutString((RADAR_WIN_SIZE-1)-(len * 7), 40, buf);
+          UG_PutString((RADAR_WIN_SIZE-1)-(len * fWidth), 40, buf);
         }
       }
     } // if (nContacts > 0)
 
-    // Update the small LCD
-    UG_SelectGUI(guiLCD1p);
-    UG_Update();
-
-    // Copy the small lcd frame to the big lcd
-    // uint16_t * smallFB = ST77xx_LCD_GetFB();
-    // LCD_WriteWindow(0, 0, 240, 240, smallFB);
-
     LCD_WriteWindow(0, 0, RADAR_WIN_SIZE, RADAR_WIN_SIZE, radarWindow);
 
-
-    #endif // BEAST_OUTPUT
+    #endif // not BEAST_OUTPUT
 
     // Check for stack overflow on this task...
     UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
@@ -1597,8 +1360,6 @@ void processBuffer(uint16_t *input, int len)
   #define BUFFERS_FOR_AVG 10
   // static uint16_t nAvgCounter = 0;
   // static uint16_t averages[BUFFERS_FOR_AVG];
-
-  // TODO - we don't really want to be calculating an average on every buffer
 
   // Just use a fixed value? How much part to part variation is there?
   globalAvg = 120;
@@ -1687,7 +1448,7 @@ void processBuffer(uint16_t *input, int len)
   */
 void demodTask(void *argument)
 {
-  vTaskDelay(1000);
+  vTaskDelay(1000); // is this needed?
 
   // Configure the tuner
   R820T2_init();
@@ -1904,9 +1665,17 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 
 bool spiTransmitInProgress = false;
 
+/**
+ * When using DMA to transfer pixel data, we need to know when the dma transfer is complete.
+*/
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 {
-  // Need a global bool or enum to track the SPI transmit state
-  spiTransmitInProgress = false;
+  // Clear the global bool to indicate that the dma transfer has finished
+  if (hspi == &hspi3) {
+    spiTransmitInProgress = false;
+  } else {
+    // Not expecting anything else to be using DMA yet
+    printf("SPI callback called with hspi != &hspi3\n");
+  }
 }
 
