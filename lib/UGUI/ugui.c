@@ -16,6 +16,9 @@
 /* -------------------------------------------------------------------------------- */
 #include "ugui.h"
 
+#include <stdio.h>
+#include <string.h>
+
 /* Static functions */
 static UG_RESULT _UG_WindowDrawTitle( UG_WINDOW* wnd );
 static void _UG_WindowUpdate( UG_WINDOW* wnd );
@@ -23,6 +26,8 @@ static UG_RESULT _UG_WindowClear( UG_WINDOW* wnd );
 static void _UG_FontSelect( UG_FONT *font);
 static UG_S16 _UG_PutChar( UG_CHAR chr, UG_S16 x, UG_S16 y, UG_COLOR fc, UG_COLOR bc);
 static UG_S16 _UG_GetCharData(UG_CHAR encoding,  const UG_U8 **p);
+static void UG_FillFrameFB( UG_S16 x1, UG_S16 y1, UG_S16 x2, UG_S16 y2, UG_COLOR c);
+
 #ifdef UGUI_USE_UTF8
 static UG_U16 _UG_DecodeUTF8(char **str);
 #endif
@@ -79,7 +84,14 @@ UG_S16 UG_Init( UG_GUI* g, UG_DEVICE *device )
       g->driver[i].state = 0;
    }
 
-   gui = g;
+   gui = g; // Have to set gui before calling UG_DriverRegister
+
+   if (device->fb != NULL)
+   {
+      UG_DriverRegister(DRIVER_FILL_FRAME, UG_FillFrameFB);
+      // UG_DriverRegister(DRIVER_FILL_AREA, xxx); // what does this one do?
+   }
+
    return 1;
 }
 
@@ -103,6 +115,29 @@ void UG_drawPixelFB(UG_S16 x, UG_S16 y, UG_COLOR c)
 
    uint32_t index = x + y * gui->device->x_dim;
    gui->device->fb[index] = c;
+}
+
+/** fast fill routine for the local frame buffer
+ * 
+ * TODO Implement with 2d dma
+ */
+static void UG_FillFrameFB( UG_S16 x1, UG_S16 y1, UG_S16 x2, UG_S16 y2, UG_COLOR c )
+{
+   // Clip the upper bounds
+   if (x2 >= gui->device->x_dim) x2 = gui->device->x_dim-1;
+   if (y2 >= gui->device->y_dim) y2 = gui->device->y_dim-1;
+
+   // Fill first line pixel by pixel
+   for(UG_S16 n=x1; n<=x2; n++) {
+      uint32_t index = n + y1 * gui->device->x_dim;
+      gui->device->fb[index] = c;
+   }
+
+   // Copy first line to remaining lines using memcpy
+   for(UG_S16 m=y1+1; m<=y2; m++) {
+      uint32_t index = x1 + m * gui->device->x_dim;
+      memcpy(&gui->device->fb[index], &gui->device->fb[index - gui->device->x_dim], (x2-x1+1)*sizeof(UG_COLOR));
+   }
 }
 
 /*
