@@ -60,3 +60,5 @@ dkms.conf
 # everything in data
 data/*
 
+# ignore the epaper lib
+lib/Epaper/*
