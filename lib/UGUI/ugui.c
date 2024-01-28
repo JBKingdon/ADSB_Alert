@@ -113,11 +113,23 @@ void UG_drawPixelFB(UG_S16 x, UG_S16 y, UG_COLOR c)
 {
    if (gui->device->fb == NULL || x >= gui->device->x_dim || y >= gui->device->y_dim) return;
 
+   if (x < 0 || y < 0) {
+      printf("UG_drawPixelFB: x,y negative\n");
+      return;
+   }
+
    uint32_t index = x + y * gui->device->x_dim;
+   if (index >= gui->device->x_dim * gui->device->y_dim) {
+      printf("UG_drawPixelFB: index out of bounds\n");
+      return;
+   }
+
    gui->device->fb[index] = c;
 }
 
 /** fast fill routine for the local frame buffer
+ * 
+ * NB Requires x1 <= x2 and y1 <= y2
  * 
  * TODO Implement with 2d dma
  */
@@ -126,6 +138,20 @@ static void UG_FillFrameFB( UG_S16 x1, UG_S16 y1, UG_S16 x2, UG_S16 y2, UG_COLOR
    // Clip the upper bounds
    if (x2 >= gui->device->x_dim) x2 = gui->device->x_dim-1;
    if (y2 >= gui->device->y_dim) y2 = gui->device->y_dim-1;
+
+   if (x1 >= gui->device->x_dim) x1 = gui->device->x_dim-1;
+   if (y1 >= gui->device->y_dim) y1 = gui->device->y_dim-1;
+
+
+   // TODO Clip the lower bounds - why is this even possible? Change the param types to unsigned
+   if (x1 < 0 || x2 < 0) {
+      printf("UG_FillFrameFB: x negative\n");
+      return;
+   }
+   if (y1 < 0 || y2 < 0) {
+      printf("UG_FillFrameFB: y negative\n");
+      return;
+   }
 
    // Fill first line pixel by pixel
    for(UG_S16 n=x1; n<=x2; n++) {
