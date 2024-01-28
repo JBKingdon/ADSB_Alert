@@ -1663,16 +1663,24 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
   }
 }
 
-bool spiTransmitInProgress = false;
+volatile bool spiTransmitInProgress = false;
 
 /**
  * When using DMA to transfer pixel data, we need to know when the dma transfer is complete.
 */
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 {
-  // Clear the global bool to indicate that the dma transfer has finished
   if (hspi == &hspi3) {
+    // Clear the global bool to track the SPI transmit state
     spiTransmitInProgress = false;
+
+    if (statusTID) {
+      BaseType_t taskWoken = 0;
+      xTaskNotifyFromISR(statusTID , 0, eNoAction, &taskWoken);
+      if (taskWoken == pdTRUE) {
+        portYIELD_FROM_ISR(taskWoken);
+      }
+    }
   } else {
     // Not expecting anything else to be using DMA yet
     printf("SPI callback called with hspi != &hspi3\n");

@@ -32,6 +32,7 @@
 #include "cmsis_os.h"
 #include <stdbool.h>
 #include <stdio.h>
+#include "perfUtil.h"
 
 extern bool spiTransmitInProgress;
 
@@ -51,6 +52,31 @@ void SPI_SetSpeed(u32 SPI_BaudRatePrescaler)
     hspi3.Instance->CFG1&=~(0X7<<28);
     hspi3.Instance->CFG1|=SPI_BaudRatePrescaler;
     __HAL_SPI_ENABLE(&hspi3);
+}
+
+/**
+ * Wait for any in progress dma transfer on spi3 to complete.
+ * 
+ * Times out if the transfer doesn't complete in a reasonable time
+ * 
+ * @return 0 on success, -1 on timeout
+*/
+int waitForTransferComplete(void)
+{
+	const TickType_t timeout = 100;	// pass as a param instead?
+
+	const uint32_t endTime = HAL_GetTick() + timeout;
+
+	while(spiTransmitInProgress && (HAL_GetTick() < endTime))
+	{
+		// Wait for notification from the interrupt
+		// There may be notifications already pending from an earlier transfer, so we can't
+		// rely on this being one to one. Hence the while loop this is wrapped with.
+		uint32_t msg; // not used yet
+		xTaskNotifyWait(0, 0, &msg, timeout);
+	}
+
+	return spiTransmitInProgress ? -1 : 0;
 }
 
 
@@ -252,7 +278,9 @@ static void SPI_SetSize(uint8_t size)
 		if (size == 1)
 		{
 			hspi3.Init.DataSize = SPI_DATASIZE_16BIT;
-			// The HAL doesn't allow dynamic changes to datasize, so the code just writes the register directly
+
+			// Based on code from the st7789 driver which just writes the register directly
+			// Find a better way?
 
 			// H723 uses lowest 5 bits of CFG1 to hold datasize-1
 			hspi3.Instance->CFG1 = (hspi3.Instance->CFG1 & 0xFFFFFFE0) | SPI_DATASIZE_16BIT;
@@ -282,6 +310,14 @@ void LCD_Clear(u16 Color)
 {
 	const uint32_t CLEAR_CHUNKSIZE = 62 * 1024 / 2;	// divide by 2 since we're transferring 16bit words
 
+	// Check that the inprogress flag isn't set before we start
+	if (waitForTransferComplete() != 0) {
+		// Flag is set and didn't clear in the timeout period, looks like we missed an event
+		printf("LCD_Clear: transmit in progress before start!\n");
+		// Clear the flag so we can continue
+		spiTransmitInProgress = false;
+	}
+
 	// enable writing to the entire screen area
 	LCD_SetWindows(0, 0, lcddev.width - 1, lcddev.height - 1);
 
@@ -302,22 +338,51 @@ void LCD_Clear(u16 Color)
 
 	uint32_t pixelsToClear = lcddev.width * lcddev.height;
 
-	while(pixelsToClear > 0) {
+	while(pixelsToClear > 0)
+	{
 		uint32_t thisChunk = pixelsToClear > CLEAR_CHUNKSIZE ? CLEAR_CHUNKSIZE : pixelsToClear;
-		HAL_StatusTypeDef status = HAL_BUSY;
-		while (status == HAL_BUSY) {
-			// DMA is transferring 16 bit words, and the last param to the call is in words not bytes
-			status = HAL_SPI_Transmit_DMA(&hspi3, (uint8_t*)fillBuffer, thisChunk);
-			if (status == HAL_BUSY) osThreadYield();
-		}
+
+		// set the flag before starting the transmit to avoid the possibility of missing the finished event
 		spiTransmitInProgress = true;
+		HAL_StatusTypeDef status = HAL_SPI_Transmit_DMA(&hspi3, (uint8_t*)fillBuffer, thisChunk);
+
+		if (status != HAL_OK) {
+			printf("LCD_Clear: SPI transmit failed\n");
+			// if we didn't transmit we need to clear the flag
+			spiTransmitInProgress = false;
+			break; // exit the transmit loop
+		}
+
 		pixelsToClear -= thisChunk;
+
+		// Wait for the transfer to complete
+		int waitResult = waitForTransferComplete();
+
+		if (waitResult != 0) {
+			printf("LCD_Clear: timedout waiting for transfer\n");
+			// clear the flag and break the loop
+			spiTransmitInProgress = false;
+			break;
+		}
+
+		// uint32_t thisChunk = pixelsToClear > CLEAR_CHUNKSIZE ? CLEAR_CHUNKSIZE : pixelsToClear;
+		// HAL_StatusTypeDef status = HAL_BUSY;
+		// int32_t retries = 10;
+		// while (status == HAL_BUSY && retries > 0) {
+		// 	// DMA is transferring 16 bit words, and the last param to the call is in words not bytes
+		// 	status = HAL_SPI_Transmit_DMA(&hspi3, (uint8_t*)fillBuffer, thisChunk);
+		// 	if (status == HAL_BUSY) {
+		// 		osThreadYield();
+		// 		retries--;
+		// 	} else if (status == HAL_OK) {
+		// 		spiTransmitInProgress = true;
+		// 		pixelsToClear -= thisChunk;
+		// 	}			
+		// }
 	}
 
 	// Need to wait for the transfer to complete before releasing CS
-	while (spiTransmitInProgress) {
-		osThreadYield();
-	}
+	// waitForTransferComplete();
 
 	LCD_CS_SET;
 
@@ -327,6 +392,7 @@ void LCD_Clear(u16 Color)
 	// re-enable memory increment on the dma stream
 	setDMAmemInc(true);
 }
+
 
 /**
  * LCD_WriteWindow
@@ -351,6 +417,14 @@ void LCD_WriteWindow(u16 x, u16 y, u16 width, u16 height, u16 *buf)
 	// Make sure that the buffer is in RAM for the dma to read
 	SCB_CleanDCache_by_Addr((uint32_t *) buf, bytesToSend);
 
+	// Check that the inprogress flag isn't set before we start
+	if (waitForTransferComplete() != 0) {
+		// Flag is set and didn't clear in the timeout period, looks like we missed an event
+		printf("LCD_WriteWindow: transmit in progress before start!\n");
+		// Clear the flag so we can continue
+		spiTransmitInProgress = false;
+	}
+
 	// Switch to 16 bit transfers
 	SPI_SetSize(1);
 
@@ -360,20 +434,29 @@ void LCD_WriteWindow(u16 x, u16 y, u16 width, u16 height, u16 *buf)
 	while(bytesToSend > 0) {
 		const uint32_t bytesToWrite = bytesToSend > CHUNKSIZE ? CHUNKSIZE : bytesToSend;
 
-		status = HAL_BUSY;
-		while (status == HAL_BUSY) {
-			status = HAL_SPI_Transmit_DMA(&hspi3, pData, bytesToWrite/2);
-			if (status == HAL_BUSY) osThreadYield();
-		}
+		// set the flag before starting the transmit to avoid the possibility of missing the finished event
 		spiTransmitInProgress = true;
+		status = HAL_SPI_Transmit_DMA(&hspi3, pData, bytesToWrite/2);
+
+		if (status != HAL_OK) {
+			printf("LCD_WriteWindow: SPI transmit failed\n");
+			// if we didn't transmit we need to clear the flag
+			spiTransmitInProgress = false;
+			break; // exit the transmit loop
+		}
+
+		// Wait for the transfer to complete
+		int waitResult = waitForTransferComplete();
+
+		if (waitResult != 0) {
+			printf("LCD_WriteWindow: timedout waiting for transfer\n");
+			// clear the flag and break the loop
+			spiTransmitInProgress = false;
+			break;
+		}
 
 		pData += bytesToWrite;
 		bytesToSend -= bytesToWrite;
-	}
-
-	// Need to wait for the transfer to complete before releasing CS
-	while (spiTransmitInProgress) {
-		osThreadYield();
 	}
 
 	LCD_CS_SET;
