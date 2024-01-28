@@ -1103,13 +1103,16 @@ void drawContact(const uint16_t plotDiameter, const aircraft_t *aircraft, bool c
     if (radius > PlotRadius) radius = PlotRadius;
     uint16_t cx = halfWidth + (int)(radius * sin((aircraft->bearing+180)*M_PI/180));
     uint16_t cy = halfHeight - (int)(radius * cos((aircraft->bearing+180)*M_PI/180)); // minus since 0 is top of display
+
     // printf("drawing at %u %u\n", cx, cy);
     UG_COLOR contactColour = C_GREEN;
     if (closing) contactColour = C_RED;
 
     // Draw a dot to show the position of the aircraft
+    printf("DC aircraft...\n");
     const uint32_t MarkSize = 2;
     UG_FillFrame(cx-MarkSize, cy-MarkSize, cx+MarkSize, cy+MarkSize, contactColour);
+    printf("DC aircraft done\n");
 
     // Draw a line representing the velocity vector of the aircraft
     // TODO figure out what to do when the line goes outside the drawing area
@@ -1118,7 +1121,10 @@ void drawContact(const uint16_t plotDiameter, const aircraft_t *aircraft, bool c
     const float bearingRad = bearing * M_PI / 180;
     const int32_t x = cx + (int)(speed * sinf(bearingRad));
     const int32_t y = cy - (int)(speed * cosf(bearingRad));
+
+    printf("DC vector...\n");
     UG_DrawLine(cx, cy, x, y, contactColour);
+    printf("DC vector done\n");
 
     // Don't show the position estimate indicator if the contact is clipped to the edge of the display
     if (radius != PlotRadius) {
@@ -1131,11 +1137,15 @@ void drawContact(const uint16_t plotDiameter, const aircraft_t *aircraft, bool c
 
         const int32_t xEst = cx + (int)(estDistance * sinf(bearingRad));
         const int32_t yEst = cy - (int)(estDistance * cosf(bearingRad));
+        printf("DC est...\n");
         UG_FillFrame(xEst-1, yEst-1, xEst+1, yEst+1, C_WHITE);
+        printf("DC est done\n");
+
       }
     }
 
   } // if (rangeNM < 50)
+
 }
 
 /**
@@ -1235,6 +1245,18 @@ void statusTask(void *argument)
 
     // printf("average %u\n", globalAvg);
 
+    // Display uptime
+    const uint32_t tSeconds = now / 1000;
+
+    sprintf(buf, "uptime: %lu:%02lu:%02lu", tSeconds / 3600, (tSeconds / 60) % 60, tSeconds % 60);
+    UG_SelectGUI(&guiLCD2);
+    UG_FontSelect(FONT_10X16);
+    UG_FontSetTransparency(false);
+    // 360 is the midpoint of the right hand half of the display. strlen/2 * fontwidth centres the text
+    const uint32_t x = 360 - (strlen(buf) * 5);
+    UG_PutString(x, 0, buf);
+
+
     UG_SelectGUI(&guiRadarWindow);
     drawBackground(RADAR_WIN_SIZE-10);
 
@@ -1262,6 +1284,7 @@ void statusTask(void *argument)
             oldContactIndex = i;
             continue; // SKIP processing old contact
           }
+          printf("calcs...\n");
           // By comparing the track and the bearing we can tell which aircraft are closing
           // We need to have lat/lon and track/speed info to do this
           bool closing = false;
@@ -1300,9 +1323,11 @@ void statusTask(void *argument)
             closestIndex = i;
           }
 
+          printf("drawing...\n");
           drawContact(RADAR_WIN_SIZE-10, aircraft, closing);
 
         } // if (aircraft)
+        printf("next\n");
       } // for (each contact)
       // printf("furthest: %d, oldest: %d\n", findMostDistantContact(), findOldestContact());
 
@@ -1651,6 +1676,11 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
    /* Invalidate Data Cache to get the updated content of the SRAM on the second half of the ADC converted data buffer: 32 bytes */
   SCB_InvalidateDCache_by_Addr((uint32_t *) &aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE/2], ADC_CONVERTED_DATA_BUFFER_SIZE);
   conversionsCompleted++;
+
+  if (conversionsCompleted % 500 == 0) {
+    HAL_GPIO_TogglePin(LED_GPIO_PORT, LED_PIN);
+  }
+
   if (hiBuf) missedBuffers++;
   hiBuf = true;
 
