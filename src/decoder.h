@@ -20,10 +20,11 @@ typedef struct distance_bearing {
 } distance_bearing_t;
 
 // Struct from dump1090 for holding aircraft info
-// TODO review the fields to see if any are unnecessary
+// TODO review the fields to see if any are unnecessary, and check required sizes
 struct aircraft {
     uint32_t      addr;           // ICAO address
-    char          flight[16];     // Flight number
+    char          callsign[10];   // Flight number
+    uint16_t      wake_class;
     // unsigned char signalLevel[8]; // Last 8 Signal Amplitudes    // JBK how to measure signal strength?
     int           altitude;       // Altitude
     int           speed;          // Velocity
@@ -38,11 +39,11 @@ struct aircraft {
     uint32_t      timestamp;      // Timestamp at which the last packet was received
     uint32_t      timestampLatLon;// Timestamp at which the last lat long was calculated
 
-    long          messages;       // Number of Mode S messages received
+    uint16_t      messages;       // Number of Mode S messages received
     int           modeA;          // Squawk
     int           modeC;          // Altitude
-    long          modeAcount;     // Mode A Squawk hit Count
-    long          modeCcount;     // Mode C Altitude hit Count
+    // long          modeAcount;     // Mode A Squawk hit Count
+    // long          modeCcount;     // Mode C Altitude hit Count
     int           modeACflags;    // Flags for mode A/C recognition
 
     // Encoded latitude and longitude as extracted by odd and even CPR encoded messages
@@ -52,7 +53,7 @@ struct aircraft {
     int           even_cprlon;
     uint32_t      odd_cprtime;
     uint32_t      even_cprtime;
-    double        lat, lon;       // Coordinated obtained from CPR encoded data
+    double        lat, lon;       // Coordinates obtained from CPR encoded data
     int           bFlags;         // Flags related to valid fields in this structure
     // struct aircraft *next;        // Next aircraft in our linked list // JBK use a static array for reliability on embedded system
     float         range;        // Should this use a distance_bearing_t?

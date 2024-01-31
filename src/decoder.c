@@ -649,6 +649,61 @@ void decodeVelocityMessage(uint32_t address, uint8_t *msgBitstream)
   // gps vs baro alt delta
 }
 
+/**
+ * 
+ * @param msgBitstream the bitstream corresponding to the 'message' part of the ADSB data (56 bits long)
+*/
+void decodeIdentificationMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type)
+{
+  // printf("decoding id message type %u\n", type);
+
+  // See https://mode-s.org/decode/content/ads-b/2-identification.html
+
+  // +------+------+------+------+------+------+------+------+------+------+
+  // | TC,5 | CA,3 | C1,6 | C2,6 | C3,6 | C4,6 | C5,6 | C6,6 | C7,6 | C8,6 |
+  // +------+------+------+------+------+------+------+------+------+------+
+
+  // TC: Type code
+  // CA: Aircraft category
+  // C*: A character
+
+  uint8_t category = readNBits(msgBitstream, 5, 3);
+
+  // printf("category %u\n", category);
+
+  char callsign[12];  // only needs 9, rounded up to words out of paranoia
+
+  for (int i = 0; i < 8; i++) {
+    uint8_t c = readNBits(msgBitstream, (6 * i) + 8, 6);
+    // Validate the character to defend against junk
+    if (c >= 1 && c <= 26) { // 1 - 26 A-Z
+      c += 'A' - 1;
+    } else if (c >= 48 && c <= 57) { // 0 - 9
+      // no conversion needed
+    } else if (c == 32) { // space
+      // no conversion needed
+    } else {
+      // not a valid character, replace with ' '
+      // (this turns up somewhat frequently, and ' ' is less distracting than say '#' for example)
+      printf("replacing char %u\n", c);
+      c = ' ';
+    }
+    callsign[i] = c;
+  }
+  callsign[8] = 0;
+
+  // printf("callsign %s\n", callsign);
+
+  aircraft_t *aircraft = findOrAddNewAircraft(address);
+
+  if (aircraft) {
+    aircraft->wake_class = category;
+    strncpy(aircraft->callsign, callsign, 9);  // still crashes with this commented out
+    aircraft->messages++;
+    aircraft->timestamp = HAL_GetTick();
+  }
+}
+
 
 /**
  * Decode gps position messages
@@ -881,12 +936,19 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
     const uint8_t type = readNBits(bitstream, 32, 5);
     // printf("Address: %06lx Type: %d\n", address, type);
 
+    // 1 to 4 are identification messages (1 reserved, 2 surface, 3 gliders, balloons, uavs etc, 4 power traffic)
+    if ((type >= 1) && (type <= 4)) {
+      decodeIdentificationMessage(address, &(bitstream[32]), type);
+
     // 9 to 18 and 20 to 22 are airborne position reports
-    if (((type >= 9) && (type <= 18)) || ((type >= 20) && (type <= 22))) {
+    } else if (((type >= 9) && (type <= 18)) || ((type >= 20) && (type <= 22))) {
       decodePositionMessage(address, &(bitstream[32]), type);
+
     } else if (type == 19) {
       // Velocity data
       decodeVelocityMessage(address, &(bitstream[32]));
+    } else {
+      // printf("Skipping message type %u\n", type);
     }
 
     #else
