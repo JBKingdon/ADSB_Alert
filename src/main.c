@@ -908,21 +908,35 @@ void drawBackground(const uint16_t size)
                   half_width+CenterMarkerSize, half_height+CenterMarkerSize, C_WHITE);
 }
 
+aircraft_t localContactArray[MAX_CONTACTS];
 
 /**
  * comparison func for passing to qsort
+ * Operates on localContactArray which must have been setup prior to calling qsort
 */
 static int compareAircraft(const void *p1, const void *p2)
 {
   uint8_t index1 = *(uint8_t *)p1;
   uint8_t index2 = *(uint8_t *)p2;
 
-  aircraft_t *aircraft1 = getContact(index1);
-  aircraft_t *aircraft2 = getContact(index2);
+  // aircraft_t *aircraft1 = getContact(index1);
+  // aircraft_t *aircraft2 = getContact(index2);
+  aircraft_t *aircraft1 = &localContactArray[index1];
+  aircraft_t *aircraft2 = &localContactArray[index2];
 
   if (aircraft1 == NULL || aircraft2 == NULL) {
     // The list must have changed while we were sorting it, return 0 as we have nothing good to do
     return 0;
+  }
+
+  // do we need to defend against nan? Would be more efficient to make sure nan was never written to the range field
+  if (isnan(aircraft1->range) && isnan(aircraft2->range)) {
+    // pedantic, should never happen
+    return 0;
+  } else if (isnan(aircraft1->range)) {
+    return 1;
+  } else if (isnan(aircraft2->range)) {
+    return -1;
   }
 
   if (aircraft1->range > aircraft2->range) {
@@ -945,7 +959,7 @@ void epaperTask(void *argument)
   // uint32_t cs, ce;
 
   // static uint32_t tLast = 0;
-  char buf[40]; // for generating strings for the displays
+  char buf[64]; // for generating strings for the displays
   sFONT * contactListFont = &Font12;
 
   epd_io_init();
@@ -993,7 +1007,9 @@ void epaperTask(void *argument)
 
   while(true)
   {
+    // printf("e waiting...\n");
     vTaskDelayUntil(&lastWakeTime, 5000);
+    // printf("e wait complete\n");
 
     Paint_Clear(WHITE);
 
@@ -1007,24 +1023,53 @@ void epaperTask(void *argument)
     sprintf(buf, "demod: %2lu%%", demodPercent);
     Paint_DrawString_EN(0, 128-Font12.Height, buf, &Font12, BLACK, WHITE);
 
-    const int nContacts = getNumContacts();
-
+    // Init the lookup array that we can sort by distance
     uint8_t aircraftIndexByDistance[MAX_CONTACTS];
+    for (int i=0; i<MAX_CONTACTS; i++) {
+      aircraftIndexByDistance[i] = i;
+    }
+
+    int nContacts = getNumContacts();
+    // printf("e nContacts %u\n", nContacts);
+
+    // Copy all the aircraft to a local array so that it can't change while we're using it
+    while(true)
+    {
+      bool failed = false;
+      for (int i=0; i<nContacts; i++) {
+        aircraft_t *c = getContact(i);
+        if (c) {
+          localContactArray[i] = *c;
+        } else {
+          printf("ERROR: contact %d is NULL\n", i);
+          // how to handle this case? Should probably start over
+          failed = true;
+          break;
+        }
+      }
+
+      if (nContacts != getNumContacts()) {
+        failed = true;
+        nContacts = getNumContacts();
+      }
+
+      if (!failed) break;
+    }
 
     if (nContacts > 0) {
 
-      Paint_DrawString_EN(0, 0, " Range Brng  Spd Trk Alt   Msgs Age", contactListFont, BLACK, WHITE);
+      Paint_DrawString_EN(0, 0, "Cllsgn Range Brng  Spd Trk  Alt  Msgs Age", contactListFont, BLACK, WHITE);
 
-      // Init the lookup array that we can sort by distance
-      for (int i=0; i<nContacts; i++) {
-        aircraftIndexByDistance[i] = i;
-      }
-
+      // printf("e sorting\n");
       qsort(aircraftIndexByDistance, nContacts, sizeof(uint8_t), compareAircraft);
+      // printf("e sorted\n");
 
       int epdLine = 1;
       for(int i=0; i<nContacts; i++) {
-        aircraft_t *aircraft = getContact(aircraftIndexByDistance[i]);
+        // aircraft_t *aircraft = getContact(aircraftIndexByDistance[i]);
+        // aircraft_t *aircraft = getContact(i);
+        aircraft_t *aircraft = &localContactArray[aircraftIndexByDistance[i]];
+        // This condition can't fail when using the local copy array, so if we keep it we can remove the test
         if (aircraft) { // in case the number of entries in the list changes since we read it
 
           // By comparing the track and the bearing we can tell which aircraft are closing
@@ -1048,9 +1093,31 @@ void epaperTask(void *argument)
           uint32_t tSince = (tNow - tLocal)/1000;
           float rangeNM = aircraft->range / 1.852;
 
+          // Check the length of the callsign
+          char *ptr = aircraft->callsign;
+          uint16_t len = 0;
+          while (*ptr != '\0') {
+            len++;
+            if (len > 8) {
+              printf("ERROR: callsign too long\n");
+              // prevent the bad string from being written to the display
+              aircraft->callsign[0] = '\0';
+              break;
+            }
+            ptr++;
+          }
+          // printf("e len %d\n", len);
+
           // Generate a line for the EPD display
           if (epdLine < 10 && rangeNM < 100) {
-            sprintf(buf, "%6.1f%6.1f%4d%4d%6u%4lu%4lu", rangeNM, 
+            char * cs;
+            if (aircraft->callsign[0] == '\0') {
+              cs = "        ";
+            } else {
+              cs = aircraft->callsign;
+            }
+            sprintf(buf, "%s%4.1f%6.1f%4d%4d%6u%4u%4lu", cs, rangeNM, 
+            // sprintf(buf, "%4.1f%6.1f%4d%4d%6u%4u%4lu", rangeNM, 
                     aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, 
                     aircraft->messages, tSince);
             uint16_t foreground = BLACK, background = WHITE;
@@ -1058,7 +1125,9 @@ void epaperTask(void *argument)
               foreground = WHITE;
               background = BLACK;
             }
+            // printf("e sprint done\n");
             Paint_DrawString_EN(0, epdLine * contactListFont->Height, buf, contactListFont, foreground, background);
+            // printf("e draw done\n");
             epdLine++;
             if (epdLine >= 10) break; // no need to process more aircraft if we're out of display lines
           }
@@ -1104,15 +1173,15 @@ void drawContact(const uint16_t plotDiameter, const aircraft_t *aircraft, bool c
     uint16_t cx = halfWidth + (int)(radius * sin((aircraft->bearing+180)*M_PI/180));
     uint16_t cy = halfHeight - (int)(radius * cos((aircraft->bearing+180)*M_PI/180)); // minus since 0 is top of display
 
-    // printf("drawing at %u %u\n", cx, cy);
+    // TODO Once we have threat assesment, make the highest threat RED
     UG_COLOR contactColour = C_GREEN;
-    if (closing) contactColour = C_RED;
+    if (closing) contactColour = C_YELLOW;
 
     // Draw a dot to show the position of the aircraft
-    printf("DC aircraft...\n");
+    // printf("DC aircraft...\n");
     const uint32_t MarkSize = 2;
     UG_FillFrame(cx-MarkSize, cy-MarkSize, cx+MarkSize, cy+MarkSize, contactColour);
-    printf("DC aircraft done\n");
+    // printf("DC aircraft done\n");
 
     // Draw a line representing the velocity vector of the aircraft
     // TODO figure out what to do when the line goes outside the drawing area
@@ -1122,9 +1191,9 @@ void drawContact(const uint16_t plotDiameter, const aircraft_t *aircraft, bool c
     const int32_t x = cx + (int)(speed * sinf(bearingRad));
     const int32_t y = cy - (int)(speed * cosf(bearingRad));
 
-    printf("DC vector...\n");
+    // printf("DC vector...\n");
     UG_DrawLine(cx, cy, x, y, contactColour);
-    printf("DC vector done\n");
+    // printf("DC vector done\n");
 
     // Don't show the position estimate indicator if the contact is clipped to the edge of the display
     if (radius != PlotRadius) {
@@ -1137,9 +1206,9 @@ void drawContact(const uint16_t plotDiameter, const aircraft_t *aircraft, bool c
 
         const int32_t xEst = cx + (int)(estDistance * sinf(bearingRad));
         const int32_t yEst = cy - (int)(estDistance * cosf(bearingRad));
-        printf("DC est...\n");
+        // printf("DC est...\n");
         UG_FillFrame(xEst-1, yEst-1, xEst+1, yEst+1, C_WHITE);
-        printf("DC est done\n");
+        // printf("DC est done\n");
 
       }
     }
@@ -1226,8 +1295,8 @@ void statusTask(void *argument)
 
     const uint32_t now = HAL_GetTick();
     uint32_t diff = now - tLast;
-    uint64_t sps = (uint64_t)ADC_CONVERTED_DATA_BUFFER_SIZE*1000 * conversionsCompleted / diff;
-    printf("Time taken: %lu, buffers:%lu sps=%lu", diff, conversionsCompleted, (uint32_t)sps);
+    // uint64_t sps = (uint64_t)ADC_CONVERTED_DATA_BUFFER_SIZE*1000 * conversionsCompleted / diff;
+    // printf("Time taken: %lu, buffers:%lu sps=%lu", diff, conversionsCompleted, (uint32_t)sps);
     tLast = now;
     conversionsCompleted = 0;
 
@@ -1238,9 +1307,10 @@ void statusTask(void *argument)
       printf("\n");
     }
 
+    // demodPercent is global and used by epaper task
     demodPercent = usSpentByDemod / (diff * 10);
 
-    printf("us demod %lu (%lu%%)\n", usSpentByDemod, demodPercent);
+    // printf("us demod %lu (%lu%%)\n", usSpentByDemod, demodPercent);
     usSpentByDemod = 0;
 
     // printf("average %u\n", globalAvg);
@@ -1255,6 +1325,10 @@ void statusTask(void *argument)
     // 360 is the midpoint of the right hand half of the display. strlen/2 * fontwidth centres the text
     const uint32_t x = 360 - (strlen(buf) * 5);
     UG_PutString(x, 0, buf);
+
+    // Show some stats, e.g. total aircraft, total messages
+    sprintf(buf, "aircraft %lu", totalContactsSeen);
+    UG_PutString(245, 32, buf);
 
 
     UG_SelectGUI(&guiRadarWindow);
@@ -1272,9 +1346,9 @@ void statusTask(void *argument)
       printf("\n%d Contacts:\n", nContacts);
       printf("Index\t");
       #ifdef SHOW_ADDR
-      printf("Addr\t");
+      printf("Addr Callsign ");
       #endif
-      printf("Range\tBearing\tSpeed\ttrack\tBaroAlt\tGpsAlt\tMsgs\tAge\n");
+      printf("Wake  Range Brng Speed track  bAlt   gAlt Msgs Age\n");
 
       int oldContactIndex = -1;
       for(int i=0; i<nContacts; i++) {
@@ -1284,7 +1358,7 @@ void statusTask(void *argument)
             oldContactIndex = i;
             continue; // SKIP processing old contact
           }
-          printf("calcs...\n");
+          // printf("calcs...\n");
           // By comparing the track and the bearing we can tell which aircraft are closing
           // We need to have lat/lon and track/speed info to do this
           bool closing = false;
@@ -1311,23 +1385,30 @@ void statusTask(void *argument)
           uint32_t tSince = (tNow - tLocal)/1000;
           printf("%2d: %c ", i, closing ? 'C' : ' ');
           #ifdef SHOW_ADDR
-          printf("%6lx\t", aircraft->addr);
-          #endif
-          float rangeNM = aircraft->range / 1.852;
-          printf("%2.2f\t%3.1f\t%4d\t%4d\t%6u\t%6u\t%3lu\t%2lu\n", rangeNM, 
-                  aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, aircraft->altitude, aircraft->messages, tSince);
+          char * cs;
+          if (aircraft->callsign[0] == '\0') {
+            cs = "        ";
+          } else {
+            cs = aircraft->callsign;
+          }
 
+          printf("%6lx %s ", aircraft->addr, cs);
+          // printf("%6lx ", aircraft->addr);
+          #endif
+          float rangeNM = aircraft->range / 1.852;  // range is held in km, so convert to NM
+          printf("%4u %6.2f %5.1f %4d %4d %6u %6u %4u %3lu\n", aircraft->wake_class, rangeNM, 
+                  aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, aircraft->altitude, aircraft->messages, tSince);
 
           if (closing && rangeNM < minRange) {
             minRange = rangeNM;
             closestIndex = i;
           }
 
-          printf("drawing...\n");
+          // printf("drawing...\n");
           drawContact(RADAR_WIN_SIZE-10, aircraft, closing);
 
         } // if (aircraft)
-        printf("next\n");
+        // printf("next\n");
       } // for (each contact)
       // printf("furthest: %d, oldest: %d\n", findMostDistantContact(), findOldestContact());
 
@@ -1551,10 +1632,10 @@ int _write(int fd, char *ptr, int len)
       break;
     }
     attempts++;
-    if (attempts > 100) {
+    if (attempts > 10) {
       return 0;
     }
-    osDelay(1);
+    osDelay(2);
   }
 
   return len; 
