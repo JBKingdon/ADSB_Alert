@@ -114,7 +114,7 @@ void UG_drawPixelFB(UG_S16 x, UG_S16 y, UG_COLOR c)
    if (gui->device->fb == NULL || x >= gui->device->x_dim || y >= gui->device->y_dim) return;
 
    if (x < 0 || y < 0) {
-      printf("UG_drawPixelFB: x,y negative\n");
+      // printf("UG_drawPixelFB: x,y negative\n");
       return;
    }
 
