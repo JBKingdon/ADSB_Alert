@@ -7,6 +7,9 @@
 #include <stdint.h>
 #include "decoder.h"
 
+extern uint32_t totalContactsSeen;
+
+
 aircraft_t * findAircraft(uint32_t address);
 int findOldestContact();
 int findMostDistantContact();

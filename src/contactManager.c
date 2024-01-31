@@ -10,6 +10,8 @@
 aircraft_t contacts[MAX_CONTACTS];
 int num_contacts = 0;
 
+uint32_t totalContactsSeen = 0;
+
 int32_t getNumContacts()
 {
     return num_contacts;
@@ -121,6 +123,9 @@ bool contactListIsFull()
 */
 aircraft_t * replaceAircraft(int index, aircraft_t * newAircraft)
 {
+    // assume this is a new contact
+    totalContactsSeen++;
+
     contacts[index] = *newAircraft;
     return &contacts[index];
 }
@@ -143,6 +148,9 @@ aircraft_t * addAircraft(uint32_t address)
 
         // clear all the fields of the struct before re-using it
         memset(&contacts[newAircraft], 0, sizeof(aircraft_t));
+
+        // increment the total counter
+        totalContactsSeen++;
 
         contacts[newAircraft].addr = address;
         return &contacts[newAircraft];
