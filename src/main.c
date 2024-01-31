@@ -1327,8 +1327,12 @@ void statusTask(void *argument)
     UG_PutString(x, 0, buf);
 
     // Show some stats, e.g. total aircraft, total messages
+    UG_FontSelect(FONT_8X12);
     sprintf(buf, "aircraft %lu", totalContactsSeen);
-    UG_PutString(245, 32, buf);
+    UG_PutString(250, 32, buf);
+
+    sprintf(buf, "msgs %lu", totalMessages);
+    UG_PutString(250, 46, buf);
 
 
     UG_SelectGUI(&guiRadarWindow);

@@ -23,6 +23,9 @@
 
 #include "localConfig.h"
 
+// Counter to track the number of adsb messages that are received
+uint32_t totalMessages = 0;
+
 /**
  * Read N bits from the bitstream starting at the specified index
  * 
@@ -928,6 +931,8 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
 
   if (crcOk)
   {
+    totalMessages++;
+    
     #ifndef BEAST_OUTPUT
 
     uint32_t address = read24Bits(bitstream, 8);
