@@ -170,6 +170,17 @@ standard names. */
 
 /* USER CODE BEGIN Defines */
 /* Section where parameter definitions can be added (for instance, to override default ones in FreeRTOS.h) */
+#define configGENERATE_RUN_TIME_STATS 1
+#define configUSE_STATS_FORMATTING_FUNCTIONS 1
+#define INCLUDE_xTaskGetIdleTaskHandle 1
+
+extern volatile unsigned long ulHighFrequencyTimerTicks;
+/* ulHighFrequencyTimerTicks is already being incremented at 20KHz.  Just set
+its value back to 0. */
+#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() ( ulHighFrequencyTimerTicks = 0UL )
+#define portGET_RUN_TIME_COUNTER_VALUE()	ulHighFrequencyTimerTicks
+
+
 /* USER CODE END Defines */
 
 #endif /* FREERTOS_CONFIG_H */

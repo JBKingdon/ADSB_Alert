@@ -70,7 +70,7 @@ SPI_HandleTypeDef hspi2;    // epaper
 SPI_HandleTypeDef hspi3;    // 3.5" lcd
 DMA_HandleTypeDef hdma_spi3_tx;
 
-TIM_HandleTypeDef htim7;  // not used yet
+TIM_HandleTypeDef htim7;  // for task profiling
 
 osThreadId_t demodTaskHandle;
 osThreadId_t epaperTID;
@@ -123,9 +123,10 @@ uint32_t demodPercent = 0;
 
 // more stats to do:
 // packets that crossed the buffer boundary
-// total messages decoded
-// 1 bit crc corrections
 // crc fails
+
+volatile uint32_t ulHighFrequencyTimerTicks = 0;
+
 
 // Flags used by the ISR handlers to indicate which half of the buffer is ready
 bool lowBuf = false;
@@ -412,25 +413,24 @@ static void MX_ADC1_Init(void)
 
 /**
   * @brief TIM7 Initialization Function
+  * 
+  * Use TIM7 for FreeRTOS task profiling?
+  * 
+  * Input clock is 275MHz, we want a tick in the 10 to 100 kHz range (exact value doesn't matter)
+  * 
+  * Prescale of 25 gives 11MHz input, period of 550 gives 20kHz output
+  * 
   * @param None
   * @retval None
   */
 static void MX_TIM7_Init(void)
 {
-
-  /* USER CODE BEGIN TIM7_Init 0 */
-
-  /* USER CODE END TIM7_Init 0 */
-
   TIM_MasterConfigTypeDef sMasterConfig = {0};
 
-  /* USER CODE BEGIN TIM7_Init 1 */
-
-  /* USER CODE END TIM7_Init 1 */
   htim7.Instance = TIM7;
-  htim7.Init.Prescaler = 4096;
+  htim7.Init.Prescaler = 25; // 11MHz
   htim7.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim7.Init.Period = 65535;
+  htim7.Init.Period = 550;  // 20kHz  TODO check if this is n+1 (not critical for this use case)
   htim7.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim7) != HAL_OK)
   {
@@ -442,10 +442,8 @@ static void MX_TIM7_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN TIM7_Init 2 */
 
-  /* USER CODE END TIM7_Init 2 */
-
+  HAL_TIM_Base_Start_IT(&htim7);
 }
 
 /**
@@ -752,7 +750,7 @@ void printArray(uint16_t *input, int len)
  * 
  * TODO optimise
 */
-void filterSamples(uint16_t *input, int len)
+FAST_CODE void filterSamples(uint16_t *input, int len)
 {
   for(int i=0; i<len-3; i++) {
     input[i] = input[i] + input[i+1] + input[i+2] + input[i+3];
@@ -793,7 +791,7 @@ void filterSamples(uint16_t *input, int len)
  * TODO generalise for different sample rates?
  * TODO set a threshold for strength to accept the match, or rely on CRC checking later?
 */
-int findPreambleInFilteredData(uint16_t *input, int len, int start)
+FAST_CODE int findPreambleInFilteredData(uint16_t *input, int len, int start)
 {
   uint32_t strength = 0;
   int bestIndex = -1;
@@ -866,7 +864,7 @@ int findPreambleInFilteredData(uint16_t *input, int len, int start)
  * @param start the index in the input array to start converting from
  * @return the number of bits converted or -1 if there is an error
 */
-int filteredAmplitudeToBitStream(uint16_t *input, int len, int start)
+FAST_CODE int filteredAmplitudeToBitStream(uint16_t *input, int len, int start)
 {
   // There are at most 112 bits needed
   for(int i=0; i<112; i++) {
@@ -1284,9 +1282,6 @@ void statusTask(void *argument)
   UG_SetForecolor(C_WHITE);
   UG_SetBackcolor(BackgroundColour);
 
-  
-  vTaskDelay(1000);
-
   while(true)
   {
     vTaskDelay(2000);
@@ -1303,9 +1298,22 @@ void statusTask(void *argument)
     if (missedBuffers) {
       printf(" %ld missed buffers\n", missedBuffers);
       missedBuffers = 0;
-    } else {
-      printf("\n");
+    // } else {
+    //   printf("\n");
     }
+
+    // char statsBuffer[512];
+    // vTaskGetRunTimeStats(statsBuffer);
+    // printf("%s\n", statsBuffer);
+
+    uint32_t idlePercent = 0;
+    const uint32_t idleCount = ulTaskGetIdleRunTimeCounter();
+    const uint32_t totalCountDiv100 = ulHighFrequencyTimerTicks / 100;
+    if (totalCountDiv100 > 0) {
+      idlePercent = idleCount / (ulHighFrequencyTimerTicks / 100);
+      // printf("Idle %lu%%\n", idlePercent);
+    }
+
 
     // demodPercent is global and used by epaper task
     demodPercent = usSpentByDemod / (diff * 10);
@@ -1324,15 +1332,24 @@ void statusTask(void *argument)
     UG_FontSetTransparency(false);
     // 360 is the midpoint of the right hand half of the display. strlen/2 * fontwidth centres the text
     const uint32_t x = 360 - (strlen(buf) * 5);
-    UG_PutString(x, 0, buf);
+    UG_PutString(x, 319-16, buf);
 
     // Show some stats, e.g. total aircraft, total messages
     UG_FontSelect(FONT_8X12);
     sprintf(buf, "aircraft %lu", totalContactsSeen);
-    UG_PutString(250, 32, buf);
+    UG_PutString(250, 0, buf);
 
-    sprintf(buf, "msgs %lu", totalMessages);
-    UG_PutString(250, 46, buf);
+    sprintf(buf, "messages %lu", totalMessages);
+    UG_PutString(250, 14, buf);
+
+    sprintf(buf, "corrected %lu", totalCorrected);
+    UG_PutString(250, 28, buf);
+
+    sprintf(buf, "maxRange %.1f", maxRange / 1.852);  // convert to nautical miles
+    UG_PutString(250, 42, buf);
+
+    sprintf(buf, "idle %lu%%", idlePercent);
+    UG_PutString(250, 56, buf);
 
 
     UG_SelectGUI(&guiRadarWindow);
@@ -1465,13 +1482,14 @@ void statusTask(void *argument)
   } // while(true)
 }
 
-void processBuffer(uint16_t *input, int len)
+FAST_CODE void processBuffer(uint16_t *input, int len)
 {
   #define BUFFERS_FOR_AVG 10
   // static uint16_t nAvgCounter = 0;
   // static uint16_t averages[BUFFERS_FOR_AVG];
 
   // Just use a fixed value? How much part to part variation is there?
+  // In theory this might be expected to be 127 but it seems to mostly average lower
   globalAvg = 120;
 
   // This is vulnerable to getting a bad estimate
@@ -1671,17 +1689,13 @@ int _read(int fd, char *ptr, int len){
   * @param  htim : TIM handle
   * @retval None
   */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+FAST_CODE void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  /* USER CODE BEGIN Callback 0 */
-
-  /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM6) {
+  if (htim->Instance == TIM7) {
+    ulHighFrequencyTimerTicks++;
+  } else if (htim->Instance == TIM6) {
     HAL_IncTick();
   }
-  /* USER CODE BEGIN Callback 1 */
-
-  /* USER CODE END Callback 1 */
 }
 
 /**
@@ -1732,7 +1746,7 @@ void LED_Init()
   * @param  hadc: ADC handle
   * @retval None
   */
-void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
+FAST_CODE void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
 {
   // Invalidate Data Cache to get the updated content of the SRAM on the first half of the ADC converted data buffer: 32 bytes
   // NB ADC_CONVERTED_DATA_BUFFER_SIZE is the array size where the values are 16 bit, so the total array size is *2, but we're
@@ -1756,7 +1770,7 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
   * @param  hadc: ADC handle
   * @retval None
   */
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+FAST_CODE void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
    /* Invalidate Data Cache to get the updated content of the SRAM on the second half of the ADC converted data buffer: 32 bytes */
   SCB_InvalidateDCache_by_Addr((uint32_t *) &aADCxConvertedData[ADC_CONVERTED_DATA_BUFFER_SIZE/2], ADC_CONVERTED_DATA_BUFFER_SIZE);
@@ -1783,7 +1797,7 @@ volatile bool spiTransmitInProgress = false;
 /**
  * When using DMA to transfer pixel data, we need to know when the dma transfer is complete.
 */
-void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
+FAST_CODE void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 {
   if (hspi == &hspi3) {
     // Clear the global bool to track the SPI transmit state
