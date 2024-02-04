@@ -160,6 +160,22 @@ SECTIONS
     . = ALIGN(4);
   } >DTCMRAM
 
+
+   __itcm_flash_base__ = LOADADDR(.itcm_text);
+  .itcm_text : ALIGN_WITH_INPUT
+  {
+        . = ALIGN(4);
+        PROVIDE(__itcm_text_base_ram__ = .);
+
+   /* *(.ramfunc.$ITCM_RAM) */
+        KEEP(*(.itcm_text*))
+        KEEP(*(.bss.__itcm_text_*))
+   KEEP(*lld.o (.text*))
+        . = ALIGN(4);
+        PROVIDE(__itcm_text_end_ram__ = .);
+  } >ITCMRAM AT> FLASH
+
+
   /* User_heap_stack section, used to check that there is enough RAM left */
   ._user_heap_stack :
   {

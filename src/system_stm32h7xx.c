@@ -46,6 +46,7 @@
 
 #include "stm32h7xx.h"
 #include <math.h>
+#include <string.h>
 
 #if !defined  (HSE_VALUE)
 #define HSE_VALUE    ((uint32_t)25000000) /*!< Value of the External oscillator in Hz */
@@ -164,6 +165,18 @@
 /** @addtogroup STM32H7xx_System_Private_Functions
   * @{
   */
+
+void copy_flash_to_itcm(void) {
+  extern const unsigned char __itcm_flash_base__;
+  extern unsigned char __itcm_text_base_ram__;
+  extern unsigned char __itcm_text_end_ram__;
+ 
+  size_t itcm_text_size = (size_t) (&__itcm_text_end_ram__ -
+                &__itcm_text_base_ram__);
+ 
+  memcpy(&__itcm_text_base_ram__, &__itcm_flash_base__, itcm_text_size);
+}
+
 
 /**
   * @brief  Setup the microcontroller system
@@ -298,6 +311,9 @@ void SystemInit (void)
 #endif /* USER_VECT_TAB_ADDRESS */
 
 #endif /*DUAL_CORE && CORE_CM4*/
+
+copy_flash_to_itcm();
+
 }
 
 /**
