@@ -29,6 +29,7 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 #include "stm32h7xx_hal.h"
 
+#define FAST_CODE __attribute__((section(".itcm_text")))
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);

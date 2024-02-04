@@ -17,6 +17,7 @@
 
 #include "stm32h7xx_hal.h"
 
+#include "main.h"   // for the FAST_CODE definition
 #include "decoder.h"
 #include "decoderUtils.h"
 #include "contactManager.h"
@@ -25,6 +26,8 @@
 
 // Counter to track the number of adsb messages that are received
 uint32_t totalMessages = 0;
+uint32_t totalCorrected = 0;
+float maxRange = 0.0;
 
 /**
  * Read N bits from the bitstream starting at the specified index
@@ -122,7 +125,7 @@ const uint32_t modes_checksum_table[112] = {
 /**
  * modified to operate on the bitsream array which is one byte per bit
 */
-uint32_t modeSChecksum(const uint8_t *bitstream, int bits) 
+FAST_CODE uint32_t modeSChecksum(const uint8_t *bitstream, int bits) 
 {
   uint32_t   crc = 0;
 
@@ -305,7 +308,7 @@ double cprDlonFunction(double lat, int fflag, int surface) {
  * 
  * @return 0 for success, -1 for failure
 */
-int decodeCPR(aircraft_t *a, const int fflag, const bool surface)
+FAST_CODE int decodeCPR(aircraft_t *a, const int fflag, const bool surface)
 {
   double AirDlat0 = (surface ? 90.0 : 360.0) / 60.0;
   double AirDlat1 = (surface ? 90.0 : 360.0) / 59.0;
@@ -466,7 +469,7 @@ int decodeID13Field(int ID13Field) {
  * @return 0 for success, -1 for failure
  *
 */
-int decodeCPRrelative(aircraft_t *a, uint32_t address, int fflag, int surface, double latRel, double lonRel, double latCPR, double lonCPR) 
+FAST_CODE int decodeCPRrelative(aircraft_t *a, uint32_t address, int fflag, int surface, double latRel, double lonRel, double latCPR, double lonCPR) 
 {
   double AirDlat;
   double AirDlon;
@@ -714,7 +717,7 @@ void decodeIdentificationMessage(uint32_t address, uint8_t *msgBitstream, uint8_
  * @param msgBitstream the bitstream corresponding to the 'message' part of the ADSB data (56 bits long)
  * 
 */
-void decodePositionMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type)
+FAST_CODE void decodePositionMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type)
 {
   /** message format
   * +-------+-------+--------+---------+------+------+-------------+-------------+
@@ -818,6 +821,13 @@ void decodePositionMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type
       // range is good, so store the results
       aircraft->bearing = db.bearing;
       aircraft->range = db.distance;
+
+      // printf("global position success\n");
+
+      // Global position implies multiple contacts, so we can use this point to record max range with confidence
+      if (aircraft->range > maxRange) {
+        maxRange = aircraft->range;
+      }
     }
 
   } else {
@@ -924,6 +934,7 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
               // printf("1 bit error at index %d\n", i);
               bitstream[i] = 1 - bitstream[i];
               crcOk = true; // Assumes that if we found a value matching the error there was only the single error. Mostly true
+              totalCorrected++;
               break;  // we found our 1 bit, so break the loop
           }
       }
@@ -932,7 +943,7 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
   if (crcOk)
   {
     totalMessages++;
-    
+
     #ifndef BEAST_OUTPUT
 
     uint32_t address = read24Bits(bitstream, 8);

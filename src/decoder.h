@@ -14,6 +14,8 @@
 #define MAX_CONTACTS 10
 
 extern uint32_t totalMessages;
+extern uint32_t totalCorrected;
+extern float maxRange;
 
 // Struct for holding distance & bearing values
 typedef struct distance_bearing {
