@@ -1369,7 +1369,7 @@ void statusTask(void *argument)
       #ifdef SHOW_ADDR
       printf("Addr Callsign ");
       #endif
-      printf("Wake  Range Brng Speed track  bAlt   gAlt Msgs Age\n");
+      printf("Wake  Range Brng Speed track  bAlt   gAlt  vSpd Msgs Age\n");
 
       int oldContactIndex = -1;
       for(int i=0; i<nContacts; i++) {
@@ -1417,8 +1417,9 @@ void statusTask(void *argument)
           // printf("%6lx ", aircraft->addr);
           #endif
           float rangeNM = aircraft->range / 1.852;  // range is held in km, so convert to NM
-          printf("%4u %6.2f %5.1f %4d %4d %6u %6u %4u %3lu\n", aircraft->wake_class, rangeNM, 
-                  aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, aircraft->altitude, aircraft->messages, tSince);
+          printf("%4u %6.2f %5.1f %4d %4d %6u %6u %5d %4u %3lu\n", aircraft->wake_class, rangeNM, 
+                  aircraft->bearing+180, aircraft->speed, aircraft->track, aircraft->modeC, aircraft->altitude, aircraft->vert_rate,
+                  aircraft->messages, tSince);
 
           if (closing && rangeNM < minRange) {
             minRange = rangeNM;

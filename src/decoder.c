@@ -37,7 +37,7 @@ float maxRange = 0.0;
  * @param nBits number of bits to read
  * @return the value of the bits read
 */
-uint32_t readNBits(const uint8_t *input, const int start, const int nBits)
+FAST_CODE uint32_t readNBits(const uint8_t *input, const int start, const int nBits)
 {
   uint32_t res = 0;
 
@@ -63,7 +63,7 @@ uint32_t readNBits(const uint8_t *input, const int start, const int nBits)
  * @param input bitstream to read from as an array of uint8_t, values must be 0 or 1
  * @param start index in the bitstream to start reading from
 */
-uint8_t read8Bits(const uint8_t *input, const int start)
+FAST_CODE uint8_t read8Bits(const uint8_t *input, const int start)
 {
   const u_int8_t res = readNBits(input, start, 8);
 
@@ -79,7 +79,7 @@ uint8_t read8Bits(const uint8_t *input, const int start)
  * @param start index in the bitstream to start reading from
  * 
 */
-uint32_t read24Bits(const uint8_t *input, const int start)
+FAST_CODE uint32_t read24Bits(const uint8_t *input, const int start)
 {
   uint32_t res = readNBits(input, start, 24);
 
@@ -123,7 +123,7 @@ const uint32_t modes_checksum_table[112] = {
 };
 
 /**
- * modified to operate on the bitsream array which is one byte per bit
+ * modified to operate on the bitstream array which is one byte per bit
 */
 FAST_CODE uint32_t modeSChecksum(const uint8_t *bitstream, int bits) 
 {
@@ -199,7 +199,7 @@ void calculateDistance(double lat1, double lon1, double lat2, double lon2, dista
 //
 // Always positive MOD operation, used for CPR decoding.
 //
-int cprModFunction(int a, int b) {
+FAST_CODE int cprModFunction(int a, int b) {
     int res = a % b;
     if (res < 0) res += b;
     return res;
@@ -211,7 +211,7 @@ int cprModFunction(int a, int b) {
 //
 // The NL function uses the precomputed table from 1090-WP-9-14
 //
-int cprNLFunction(double lat) {
+FAST_CODE int cprNLFunction(double lat) {
     if (lat < 0) lat = -lat; // Table is simmetric about the equator
     if (lat < 10.47047130) return 59;
     if (lat < 14.82817437) return 58;
@@ -277,7 +277,7 @@ int cprNLFunction(double lat) {
 //
 //=========================================================================
 //
-int cprNFunction(double lat, int fflag) {
+FAST_CODE int cprNFunction(double lat, int fflag) {
     int nl = cprNLFunction(lat) - (fflag ? 1 : 0);
     if (nl < 1) nl = 1;
     return nl;
@@ -286,7 +286,7 @@ int cprNFunction(double lat, int fflag) {
 //
 //=========================================================================
 //
-double cprDlonFunction(double lat, int fflag, int surface) {
+FAST_CODE double cprDlonFunction(double lat, int fflag, int surface) {
     return (surface ? 90.0 : 360.0) / cprNFunction(lat, fflag);
 }
 
@@ -421,25 +421,26 @@ FAST_CODE int decodeCPR(aircraft_t *a, const int fflag, const bool surface)
 //
 // For more info: http://en.wikipedia.org/wiki/Gillham_code
 //
-int decodeID13Field(int ID13Field) {
-    int hexGillham = 0;
+int decodeID13Field(int ID13Field) 
+{
+  int hexGillham = 0;
 
-    if (ID13Field & 0x1000) {hexGillham |= 0x0010;} // Bit 12 = C1
-    if (ID13Field & 0x0800) {hexGillham |= 0x1000;} // Bit 11 = A1
-    if (ID13Field & 0x0400) {hexGillham |= 0x0020;} // Bit 10 = C2
-    if (ID13Field & 0x0200) {hexGillham |= 0x2000;} // Bit  9 = A2
-    if (ID13Field & 0x0100) {hexGillham |= 0x0040;} // Bit  8 = C4
-    if (ID13Field & 0x0080) {hexGillham |= 0x4000;} // Bit  7 = A4
+  if (ID13Field & 0x1000) {hexGillham |= 0x0010;} // Bit 12 = C1
+  if (ID13Field & 0x0800) {hexGillham |= 0x1000;} // Bit 11 = A1
+  if (ID13Field & 0x0400) {hexGillham |= 0x0020;} // Bit 10 = C2
+  if (ID13Field & 0x0200) {hexGillham |= 0x2000;} // Bit  9 = A2
+  if (ID13Field & 0x0100) {hexGillham |= 0x0040;} // Bit  8 = C4
+  if (ID13Field & 0x0080) {hexGillham |= 0x4000;} // Bit  7 = A4
   //if (ID13Field & 0x0040) {hexGillham |= 0x0800;} // Bit  6 = X  or M 
-    if (ID13Field & 0x0020) {hexGillham |= 0x0100;} // Bit  5 = B1 
-    if (ID13Field & 0x0010) {hexGillham |= 0x0001;} // Bit  4 = D1 or Q
-    if (ID13Field & 0x0008) {hexGillham |= 0x0200;} // Bit  3 = B2
-    if (ID13Field & 0x0004) {hexGillham |= 0x0002;} // Bit  2 = D2
-    if (ID13Field & 0x0002) {hexGillham |= 0x0400;} // Bit  1 = B4
-    if (ID13Field & 0x0001) {hexGillham |= 0x0004;} // Bit  0 = D4
+  if (ID13Field & 0x0020) {hexGillham |= 0x0100;} // Bit  5 = B1 
+  if (ID13Field & 0x0010) {hexGillham |= 0x0001;} // Bit  4 = D1 or Q
+  if (ID13Field & 0x0008) {hexGillham |= 0x0200;} // Bit  3 = B2
+  if (ID13Field & 0x0004) {hexGillham |= 0x0002;} // Bit  2 = D2
+  if (ID13Field & 0x0002) {hexGillham |= 0x0400;} // Bit  1 = B4
+  if (ID13Field & 0x0001) {hexGillham |= 0x0004;} // Bit  0 = D4
 
-    return (hexGillham);
-    }
+  return (hexGillham);
+}
 
 // Based on code in dump1090
 
@@ -566,7 +567,7 @@ FAST_CODE int decodeCPRrelative(aircraft_t *a, uint32_t address, int fflag, int 
  * 
  * @return a pointer to a new or existing aircraft entry, or NULL if there is no space for a new entry.
 */
-aircraft_t * findOrAddNewAircraft(uint32_t address)
+FAST_CODE aircraft_t * findOrAddNewAircraft(uint32_t address)
 {
     // do we have an existing contact record for this address?
   aircraft_t *aircraft = findAircraft(address);
@@ -600,9 +601,10 @@ aircraft_t * findOrAddNewAircraft(uint32_t address)
  * @param msgBitstream the bitstream corresponding to the 'message' part of the ADSB data (56 bits long)
  *
 */
-void decodeVelocityMessage(uint32_t address, uint8_t *msgBitstream)
+FAST_CODE void decodeVelocityMessage(uint32_t address, uint8_t *msgBitstream)
 {
   // format:
+  //       5    8    9     10    13      24      35     36   37
   // TC 5 |ST 3|IC 1|IFR 1|NUC 3|V_EW 11|V_NS 11|VrSrc1|Svr1|VR 9      |RESV 2|SDif 1|DAlt 7  |
 
   const uint8_t subType = readNBits(msgBitstream, 5, 3);
@@ -642,24 +644,33 @@ void decodeVelocityMessage(uint32_t address, uint8_t *msgBitstream)
 
             const uint32_t tNow = HAL_GetTick();
             aircraft->timestamp = tNow;
+
+            // vertical rate info
+            const bool vRateDescending = readNBits(msgBitstream, 36, 1);
+            const int16_t vRate = (readNBits(msgBitstream, 37, 9) - 1) * 64;
+
+            aircraft->vert_rate = vRateDescending ? -vRate: vRate;
+
+            // gps vs baro alt delta
+
           }
         }
         break;
       default:
-        printf("unknown velocity subtype %u\n", subType);
+        // 2 and 4 are supersonic, not currently in use
+        // 3 is airspeed (TAS or IAS), only sent when gnss not working, should be very rare
+        printf("velocity subtype %u not implemented\n", subType);
         break;
     }
   }
 
-  // vertical rate info
-  // gps vs baro alt delta
 }
 
 /**
  * 
  * @param msgBitstream the bitstream corresponding to the 'message' part of the ADSB data (56 bits long)
 */
-void decodeIdentificationMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type)
+FAST_CODE void decodeIdentificationMessage(uint32_t address, uint8_t *msgBitstream, uint8_t type)
 {
   // printf("decoding id message type %u\n", type);
 
@@ -915,7 +926,7 @@ FAST_CODE void decodePositionMessage(uint32_t address, uint8_t *msgBitstream, ui
 
 } // decodePositionMessage()
 
-bool decodeDF17DF18(uint8_t *bitstream, int bits)
+FAST_CODE bool decodeDF17DF18(uint8_t *bitstream, int bits)
 {
   // printf("ADS-B squitter message\n");
 
@@ -1002,7 +1013,7 @@ bool decodeDF17DF18(uint8_t *bitstream, int bits)
  * @param bitstream bitstream input data not including the preamble, values must be 0 or 1
  * @param bits number of bits in the bitstream
 */
-bool decodeModeS(uint8_t *bitstream, int bits)
+FAST_CODE bool decodeModeS(uint8_t *bitstream, int bits)
 {
   bool crcOk = false;
   // printf(".");
